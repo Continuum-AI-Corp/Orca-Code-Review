@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Edit-in-place PR summary comment for the Orca-Code-Review cascade.
+// Edit-in-place PR summary comment for the OrcaCode Review cascade.
 //
 //   node summary-comment.mjs <result.json> --tier cheap|strong --push <n>
 //     --gate pass|blocked [--prev <file with the previous comment body>]
@@ -19,7 +19,7 @@
 //   line 2  <!-- orca-cr-state: {"p0":…,"p1":…,"p2":…,"p3":…,"push":…} -->
 //           machine state: the NEXT run feeds this body back via --prev for
 //           the Δ column, and reads .push to number itself
-//   then    "## Orca-Code-Review — push N", the severity table (the
+//   then    "## OrcaCode Review — push N", the severity table (the
 //           "Δ vs previous push" column appears only when --prev carries a
 //           parseable state line), a tier-state line, and a gate line.
 //
@@ -126,7 +126,7 @@ const delta = (d) => (d > 0 ? `+${d}` : String(d));
 const state = { p0: counts.P0, p1: counts.P1, p2: counts.P2, p3: counts.P3, push };
 
 const lines = [MARKER, `<!-- orca-cr-state: ${JSON.stringify(state)} -->`, ""];
-lines.push(`## Orca-Code-Review — push ${push}`, "");
+lines.push(`## OrcaCode Review — push ${push}`, "");
 if (prev) {
   lines.push("| Severity | Count | Δ vs previous push |", "|---|---|---|");
   for (const s of SEVERITIES) {

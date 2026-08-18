@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Merge the Orca-Code-Review summary into the PR DESCRIPTION body.
+// Merge the OrcaCode Review summary into the PR DESCRIPTION body.
 //
 // GitHub orders PR issue comments chronologically with no pin-to-top API, so a
 // summary posted as a comment sinks below the inline findings and is hard to

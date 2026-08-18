@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// In-job fact-injecting proxy for the Orca-Code-Review cascade.
+// In-job fact-injecting proxy for the OrcaCode Review cascade.
 //
 // OCR can only send the auth header (x-api-key / authorization) — it has no way
 // to attach custom headers. But the routing DSL routes on `headers[...]`. This
@@ -55,19 +55,32 @@
 // uncaughtException backstop that logs and keeps serving — one bad client can
 // never take the proxy down mid-job.
 //
+// Metering (CR_USAGE_FILE): every relayed response gets its `usage` block
+// appended as one JSONL record — per-call prompt/completion/cached tokens and
+// the model the gateway actually resolved. This is what makes a model's REAL
+// per-review cost measurable (unit price alone is misleading: a weaker model
+// loops more tool calls, and the prefix-cache hit rate moves the bill more than
+// the base rate does). The tap is deliberately non-invasive: it never buffers a
+// whole response — it keeps only a bounded TAIL (usage sits at the end of an
+// OpenAI-shaped body), so SSE still streams through unbuffered and memory stays
+// flat on a multi-MB completion. Extraction and the append are fully soft-fail:
+// metering must never alter, delay, or break a review.
+//
 // Env:
 //   ORCAROUTER_URL          full upstream chat-completions URL (origin + path forwarded)
 //   CR_FACTS_FILE           path to the JSON facts file the driver rewrites per pass
 //   CR_UPSTREAM_TIMEOUT_MS  optional per-attempt upstream timeout (ms; default 120000)
+//   CR_USAGE_FILE           optional JSONL path for per-call token accounting (off when unset)
+//   CR_MAX_RPM              optional client-side request ceiling (requests/min; unset = no limit)
 // On listen it prints `PROXY_URL=http://127.0.0.1:<port><upstream-path>` to
 // stdout; the driver sets OCR_LLM_URL to that. Auth is forwarded untouched and
 // never logged.
 //
 // Exported for tests: createProxyServer({ upstreamUrl, factsFile,
-// policyBlockFile, sleep, maxRetries, maxBufferBytes }) returns an unlistened
-// http.Server — `sleep` is the injectable backoff seam and `maxBufferBytes`
-// the retry-buffer cap. The CLI entry below keeps the original env-var +
-// PROXY_URL contract; action.yml usage is unchanged.
+// policyBlockFile, sleep, maxRetries, maxBufferBytes, usageFile }) returns an
+// unlistened http.Server — `sleep` is the injectable backoff seam and
+// `maxBufferBytes` the retry-buffer cap. The CLI entry below keeps the original
+// env-var + PROXY_URL contract; action.yml usage is unchanged.
 
 import http from "node:http";
 import https from "node:https";
@@ -91,6 +104,133 @@ const MAX_RETRY_BUFFER_BYTES = 8 * 1024 * 1024;
 // classify the timeout like any other pre/post-response failure.
 const DEFAULT_UPSTREAM_TIMEOUT_MS = 120_000;
 const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+// Metering keeps only this much of the END of each response. `usage` is the
+// last field of an OpenAI-shaped body (and rides the final SSE frame), so a
+// tail is sufficient — and it keeps the proxy's memory flat regardless of how
+// large the completion is.
+const USAGE_TAIL_BYTES = 64 * 1024;
+// ...but `model` sits near the START of that same body, so the tail alone loses
+// it once the body outgrows the tail — reachable on a non-streaming call with a
+// large completion. A record with model:null is one usage-summary groups under
+// "(unknown)" and cannot price, which is the whole point of metering. Keep a
+// small head too; `model` appears within the first few hundred bytes, so this
+// stays bounded and the proxy's memory stays flat.
+const USAGE_HEAD_BYTES = 4 * 1024;
+
+// Client-side request-rate ceiling (CR_MAX_RPM). Some models enforce a hard
+// per-minute request quota that cannot be raised. The engine fans out per-file
+// requests concurrently and has no rate knob, so on a large enough diff it can
+// overshoot the quota, the gateway answers 429, and the retry path above turns
+// that into backoff sleeps — dead time that counts against the job's
+// wall-clock budget. Throttling HERE is the only correct place: the proxy is
+// the single choke point every engine request passes through, so it is the
+// only spot that can observe the true aggregate rate.
+//
+// Retries count against the window too — a replayed request consumes quota
+// exactly like a fresh one.
+export function createRateLimiter({ maxRpm = 0, sleep = defaultSleep, now = () => Date.now() } = {}) {
+  if (!maxRpm || maxRpm <= 0) return { acquire: () => Promise.resolve() };
+  const window = [];
+  // Serialize admission: concurrent callers must not all observe the same
+  // pre-admission window and collectively blow through the ceiling.
+  let queue = Promise.resolve();
+  const admit = async () => {
+    for (;;) {
+      const t = now();
+      while (window.length && t - window[0] >= 60_000) window.shift();
+      if (window.length < maxRpm) {
+        window.push(t);
+        return;
+      }
+      // Wait just past the moment the oldest slot leaves the window.
+      await sleep(60_000 - (t - window[0]) + 5);
+    }
+  };
+  return {
+    acquire() {
+      // Chain even on rejection so one failure cannot wedge the queue.
+      queue = queue.then(admit, admit);
+      return queue;
+    },
+  };
+}
+
+// Pull the LAST `"usage": { ... }` object out of a response tail. Hand-scanned
+// rather than regexed because the object nests (prompt_tokens_details), which a
+// non-greedy regex would truncate. Returns null on anything unparseable — a
+// missing meter record is always preferable to disturbing the review.
+function extractUsage(text) {
+  const key = text.lastIndexOf('"usage"');
+  if (key === -1) return null;
+  const open = text.indexOf("{", key);
+  if (open === -1) return null;
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  for (let i = open; i < text.length; i += 1) {
+    const ch = text[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === "\\") esc = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') inStr = true;
+    else if (ch === "{") depth += 1;
+    else if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        try {
+          return JSON.parse(text.slice(open, i + 1));
+        } catch {
+          return null;
+        }
+      }
+    }
+  }
+  return null; // truncated by the tail cap — treat as absent
+}
+
+// The resolved model name, so a router-alias run records what the DSL actually
+// picked (the request only ever names the alias).
+function extractModel(text) {
+  const m = text.match(/"model"\s*:\s*"([^"]{1,200})"/);
+  return m ? m[1] : null;
+}
+
+// Append one metering record. Never throws: a full disk or a bad path must not
+// fail a review that otherwise succeeded.
+// `headText` is the start of the same response when the caller has it (the tap
+// keeps one); callers holding the WHOLE body may omit it, since the tail is then
+// the whole body too.
+function recordUsage(tailText, { usageFile, status, retries, seq, error = null, headText = null }) {
+  if (!usageFile) return;
+  try {
+    const usage = extractUsage(tailText);
+    const cached =
+      usage?.prompt_tokens_details?.cached_tokens ??
+      usage?.cached_tokens ??
+      usage?.prompt_cache_hit_tokens ??
+      0;
+    fs.appendFileSync(
+      usageFile,
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        seq,
+        status,
+        retries,
+        model: (headText ? extractModel(headText) : null) ?? extractModel(tailText),
+        prompt: usage?.prompt_tokens ?? null,
+        completion: usage?.completion_tokens ?? null,
+        total: usage?.total_tokens ?? null,
+        cached,
+        ...(error ? { error } : {}),
+      }) + "\n",
+    );
+  } catch {
+    /* best-effort: metering is observability, never a failure mode */
+  }
+}
 
 // A guardrail (content policy) or firewall (tool-call policy) block arrives as
 // HTTP 400 with `error.code = guardrail_blocked|firewall_blocked`. Persist the
@@ -171,13 +311,32 @@ export function createProxyServer({
   maxRetries = 3,
   maxBufferBytes = MAX_RETRY_BUFFER_BYTES,
   upstreamTimeoutMs = DEFAULT_UPSTREAM_TIMEOUT_MS,
+  usageFile = "",
+  maxRpm = 0,
+  now = () => Date.now(),
 } = {}) {
   const upstream = new URL(upstreamUrl);
   const upstreamLib = upstream.protocol === "http:" ? http : https;
+  // Shared across every in-flight request: the ceiling is per-proxy (i.e. per
+  // job), not per-connection.
+  const limiter = createRateLimiter({ maxRpm, sleep, now });
+  // Per-proxy call counter, so a metering file reads as the ordered sequence of
+  // engine calls in one job (how many calls a model needed is itself a cost
+  // signal — see the header).
+  let callSeq = 0;
 
   return http.createServer((req, res) => {
+    const mySeq = usageFile ? ++callSeq : 0;
     const headers = { ...req.headers };
     delete headers.host; // must match upstream, not the loopback proxy
+    // The metering tap reads raw response bytes, so a gzip/br body would leave
+    // every token field null. This is the DEFAULT path rather than an edge case:
+    // Go's net/http adds `Accept-Encoding: gzip` on its own and decompresses
+    // transparently, so the engine asks for compression without being told to.
+    // Ask upstream for identity while metering — the cost is one
+    // loopback-to-gateway compression win, and the alternative is a meter that
+    // silently measures nothing.
+    if (usageFile) headers["accept-encoding"] = "identity";
     Object.assign(headers, readFacts(factsFile));
     const target = new URL(req.url, upstream);
 
@@ -211,7 +370,14 @@ export function createProxyServer({
     // Terminal failure for one client request. Before the relay: answer 502.
     // After it: the headers are out, so destroy the connection — a truncated
     // stream must error out fast, not leave OCR waiting until the job timeout.
-    const failResponse = (retries) => {
+    const failResponse = (retries, reason) => {
+      // Meter the failure. Without this, an attempt that never received a
+      // response is INVISIBLE to the metering file: a run where the gateway
+      // hung on every call would record zero rows and read as "the model did
+      // nothing", when in fact the environment failed. Recording it keeps
+      // those two cases distinguishable — with no token counts, since none
+      // were reported.
+      recordUsage("", { usageFile, status: 0, retries, seq: mySeq, error: reason || "no response" });
       if (clientGone || res.writableEnded) return; // client already gone — nobody to answer
       if (res.headersSent) {
         res.destroy();
@@ -238,6 +404,10 @@ export function createProxyServer({
         upRes.on("end", () => {
           const buf = Buffer.concat(parts);
           recordPolicyBlock(buf, policyBlockFile);
+          // A blocked call still consumed the gateway's attention (and shows up
+          // as a failed pass in the log), so meter it too — an all-blocked run
+          // must not read as a free run.
+          recordUsage(buf.toString("utf8"), { usageFile, status, retries, seq: mySeq });
           if (clientGone || res.writableEnded) return; // client left during the 400 buffer — nobody to answer
           res.writeHead(status, outHeaders);
           res.end(buf);
@@ -247,6 +417,33 @@ export function createProxyServer({
           res.end();
         });
         return;
+      }
+      // Metering tap: observe a bounded TAIL of the body without buffering it.
+      // A 'data' listener alongside pipe() sees the same chunks and does not
+      // consume them, so the relay below is byte-for-byte unchanged.
+      if (usageFile) {
+        let tail = Buffer.alloc(0);
+        let head = Buffer.alloc(0); // carries `model`; see USAGE_HEAD_BYTES
+        upRes.on("data", (c) => {
+          if (head.length < USAGE_HEAD_BYTES) {
+            // Copy out of the concat so the slice does not retain it.
+            head = Buffer.from(Buffer.concat([head, c]).subarray(0, USAGE_HEAD_BYTES));
+          }
+          const joined = tail.length ? Buffer.concat([tail, c]) : c;
+          tail =
+            joined.length > USAGE_TAIL_BYTES
+              ? Buffer.from(joined.subarray(-USAGE_TAIL_BYTES))
+              : joined;
+        });
+        upRes.on("end", () => {
+          recordUsage(tail.toString("utf8"), {
+            usageFile,
+            status,
+            retries,
+            seq: mySeq,
+            headText: head.toString("utf8"),
+          });
+        });
       }
       res.writeHead(status, outHeaders);
       upRes.pipe(res); // stream SSE through unbuffered
@@ -276,6 +473,17 @@ export function createProxyServer({
     // start a second parallel retry chain (two relays -> double writeHead).
     const attempt = (body, retries) => {
       if (clientGone || res.destroyed) return; // client gave up — nobody left to answer
+      // Wait for a rate-limit slot before dialing. No-op when maxRpm is unset.
+      // Re-check the client afterwards: a throttled request can sit here for
+      // tens of seconds, and OCR may have hung up in the meantime — dialing
+      // then would burn quota on a response nobody will read.
+      limiter.acquire().then(() => {
+        if (clientGone || res.destroyed) return;
+        dial(body, retries);
+      });
+    };
+
+    const dial = (body, retries) => {
       let settled = false;
       const settleThisAttempt = () => {
         if (settled) return false;
@@ -347,7 +555,7 @@ export function createProxyServer({
             retries < maxRetries ? " (after the request was sent — not retried)" : ""
           }`,
         );
-        failResponse(retries);
+        failResponse(retries, e.message);
       });
       upReq.end(body, () => {
         bodySent = true;
@@ -363,6 +571,13 @@ export function createProxyServer({
     let streaming = false;
     let streamReq = null;
 
+    // NOTE: the streamed path deliberately does NOT wait on the limiter. The
+    // client body is already flowing into us and cannot be paused for a
+    // minute-scale delay without stalling `req` and risking OCR's own timeout,
+    // and it is a single unreplayable attempt. Oversized bodies are rare (>8
+    // MiB) and the engine's per-file requests are far smaller, so this cannot
+    // meaningfully erode the ceiling — but it is a known, bounded exception
+    // rather than an oversight.
     const startStreaming = () => {
       streaming = true;
       console.error(
@@ -385,7 +600,7 @@ export function createProxyServer({
       });
       upReq.on("error", (e) => {
         console.error(`fact-proxy: upstream error (streamed body is unreplayable — not retried): ${e.message}`);
-        failResponse(0);
+        failResponse(0, e.message);
       });
       streamReq = upReq;
       activeUpReq = upReq;
@@ -436,6 +651,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     upstreamUrl: upstream.href,
     factsFile: process.env.CR_FACTS_FILE || "",
     policyBlockFile: process.env.CR_POLICY_BLOCK_FILE || "",
+    usageFile: process.env.CR_USAGE_FILE || "",
+    ...(Number.isFinite(Number(process.env.CR_MAX_RPM)) && Number(process.env.CR_MAX_RPM) > 0
+      ? { maxRpm: Number(process.env.CR_MAX_RPM) }
+      : {}),
     ...(Number.isFinite(envTimeout) && envTimeout > 0 ? { upstreamTimeoutMs: envTimeout } : {}),
   });
   server.listen(0, "127.0.0.1", () => {

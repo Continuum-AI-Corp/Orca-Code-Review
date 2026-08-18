@@ -1,4 +1,4 @@
-# Orca-Code-Review
+# OrcaCode Review
 
 AI pull-request review powered by the [OrcaRouter](https://orcarouter.ai) model
 gateway. A cheap model screens every push; once a push comes back clear of
@@ -34,7 +34,10 @@ merge.
 4. **Merge gate** — the job fails if any **P0/P1** is found; mark the check
    "required" in branch protection to block the merge.
 5. **Per-commit loop** — `synchronize` re-reviews on every new push; comment
-   `/orca-code-review` on a PR to re-run on demand. The comment re-run posts
+   `/orcacode-review` on a PR to re-run on demand. Either prefix (`/` or `@`)
+   with either separator works — `/orcacode-review`, `/orcacode review`,
+   `@orcacode-review`, `@orcacode review` — the same set the OrcaCode Review
+   GitHub App accepts, so no spelling silently does nothing. The comment re-run posts
    fresh review comments but does **not** update the required merge-gate check:
    an `issue_comment` run is tied to the default branch, not the PR head, so its
    pass/fail can't attach to the PR's commit. Push a new commit to refresh the
@@ -80,7 +83,7 @@ merge.
    (copy from [`workflows/orca-code-review.yml`](./workflows/orca-code-review.yml)):
 
    ```yaml
-   name: Orca-Code-Review
+   name: OrcaCode Review
    on:
      pull_request_target:
        # ready_for_review makes the dashboard's trigger=ready_for_review mode
@@ -95,13 +98,17 @@ merge.
    jobs:
      review:
        runs-on: ubuntu-latest
-       # PR events, or a `/orca-code-review` command from a maintainer —
-       # otherwise any commenter could spend your quota.
+       # PR events, or a review command from a maintainer — otherwise any
+       # commenter could spend your quota. All four spellings are accepted,
+       # matching the OrcaCode Review GitHub App.
        if: |
          github.event_name == 'pull_request_target' ||
          (github.event_name == 'issue_comment' &&
            github.event.issue.pull_request &&
-           startsWith(github.event.comment.body, '/orca-code-review') &&
+           (startsWith(github.event.comment.body, '/orcacode-review') ||
+             startsWith(github.event.comment.body, '/orcacode review') ||
+             startsWith(github.event.comment.body, '@orcacode-review') ||
+             startsWith(github.event.comment.body, '@orcacode review')) &&
            contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association))
        steps:
          - uses: Continuum-AI-Corp/orca-code-review@v1
@@ -123,7 +130,7 @@ All optional — pass as `with:` inputs on the action:
 |---|---|---|
 | `orcarouter-api-key` | _(required)_ | OrcaRouter API key |
 | `orcarouter-url` | `https://api.orcarouter.ai/v1/chat/completions` | Gateway endpoint |
-| `brand` | `Orca-Code-Review` | Name shown on PR comments |
+| `brand` | `OrcaCode Review` | Name shown on PR comments |
 | `router` | `orcarouter/code-review` | OrcaRouter router alias whose DSL recipe picks the cheap/strong model per tier (the action names no models) |
 | `fix-first` | `P0,P1` | Keep the PR on the cheap tier until these are cleared (then it's promoted) |
 | `block-on` | `P0,P1` | Fail the check (block merge) on one of these |
@@ -131,7 +138,7 @@ All optional — pass as `with:` inputs on the action:
 | `max-diff-files` | `300` | Skip the review (same notice + `on-oversized-diff` outcome) when the diff touches more than this many files |
 | `on-oversized-diff` | `fail` | What an oversized-diff skip does to the check: `fail` (default) fails it, so a diff padded past the limits can never bypass a required merge gate; `pass` makes skips advisory (notice + green check) |
 | `settings` | `true` | Fetch per-repo settings from the OrcaRouter dashboard on every run; set `"false"` to skip the fetch and make the workflow file authoritative (inputs/defaults apply as-is, no dashboard override) |
-| `auto-review-authors` | `""` (everyone) | Comma-separated author-association allowlist for **automatic** reviews. Empty reviews every PR. On a **public** repo, set e.g. `OWNER,MEMBER,COLLABORATOR,CONTRIBUTOR` so anonymous fork PRs can't drain your wallet with paid cascades (they can still be reviewed on demand via `/orca-code-review`). See [Public repos & spend](SECURITY.md#public-repos--spend). |
+| `auto-review-authors` | `""` (everyone) | Comma-separated author-association allowlist for **automatic** reviews. Empty reviews every PR. On a **public** repo, set e.g. `OWNER,MEMBER,COLLABORATOR,CONTRIBUTOR` so anonymous fork PRs can't drain your wallet with paid cascades (they can still be reviewed on demand via `/orcacode-review`). See [Public repos & spend](SECURITY.md#public-repos--spend). |
 | `report` | `true` | Send a per-run summary (severity counts only — never code) to the OrcaRouter control plane; set `"false"` to disable — see [Run reporting](#run-reporting) |
 | `github-token` | `${{ github.token }}` | Token used to fetch the PR head, post review comments, and manage the tier label; override only if the default `GITHUB_TOKEN` lacks the needed scopes |
 | `engine-version` | `1.3.13` | Pinned `@alibaba-group/open-code-review` version (the review engine); bump deliberately after testing — later steps parse its JSON output shape |
@@ -153,8 +160,8 @@ OrcaRouter dashboard without touching the workflow:
 
 | Setting | Values (default first) | Effect in the Action |
 |---|---|---|
-| `auto_review` | `true` / `false` | `false`: automatic (`pull_request_target`) runs skip the engine, leave one small "automatic review is off" comment, and **pass** the check. `/orca-code-review` comment commands still run. |
-| `trigger` | `every_push` / `ready_for_review` / `on_demand` | `every_push`: review every push. `ready_for_review`: skip automatic runs **while the PR is a draft** (add `ready_for_review` to your workflow's `pull_request_target.types` so the review fires when the PR leaves draft). `on_demand`: skip all automatic runs — only `/orca-code-review` comments review. All skips pass the check. |
+| `auto_review` | `true` / `false` | `false`: automatic (`pull_request_target`) runs skip the engine, leave one small "automatic review is off" comment, and **pass** the check. `/orcacode-review` comment commands still run. |
+| `trigger` | `every_push` / `ready_for_review` / `on_demand` | `every_push`: review every push. `ready_for_review`: skip automatic runs **while the PR is a draft** (add `ready_for_review` to your workflow's `pull_request_target.types` so the review fires when the PR leaves draft). `on_demand`: skip all automatic runs — only `/orcacode-review` comments review. All skips pass the check. |
 | `exhaustive` | `false` / `true` | Re-run the engine up to **2 extra times on the strong (enforced) tier**, deduplicating findings across passes (one review pass is not exhaustive; a re-run surfaces missed findings). The cheap screening pass never gets extras — its result is either superseded by the same-run strong review or held on fix-first findings anyway. The loop stops early once a pass adds nothing new **or a fix-first (P0/P1) finding is already in hand** (the gate blocks on it regardless of extra depth). **Cost cap: at most 3 engine passes total on the enforced tier.** The summary comment notes `exhaustive: N passes`. |
 | `quiet` | `false` / `true` | Advisory **P2 comments are not posted inline** — they are muted at the posting step only. The summary keeps the **true** P0/P1/P2 counts with a `quiet mode: P2 shown in summary only` note, and the gate/run report always see the unfiltered counts. |
 | `fix_first` | `"P0,P1"` | Same meaning as the `fix-first` input — see precedence below. |
@@ -225,7 +232,7 @@ repo setting:
 4. Save.
 
 Now a failing review disables the merge button until it goes green. Re-run the
-gate by pushing a new commit (the `/orca-code-review` comment posts a fresh
+gate by pushing a new commit (the `/orcacode-review` comment posts a fresh
 read but can't flip the required check — see the per-commit loop note above).
 
 **Merge-gate note — oversized diffs.** An oversized-diff skip (`max-diff-kb` /

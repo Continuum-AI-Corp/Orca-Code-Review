@@ -1,4 +1,4 @@
-# Orca-Code-Review — example consumer workflow.
+# OrcaCode Review — example consumer workflow.
 #
 # Copy this file into your repo at `.github/workflows/` and add one secret,
 # `ORCAROUTER_API_KEY`. The review logic lives in the published action, so you
@@ -9,7 +9,7 @@
 # is clear does the strong model run the final pass. A severity gate can fail the
 # check to block the merge — mark it "required" in branch protection.
 
-name: Orca-Code-Review
+name: OrcaCode Review
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}
@@ -34,16 +34,23 @@ permissions:
 jobs:
   review:
     runs-on: ubuntu-latest
-    # Run on PR events, or when a trusted user comments `/orca-code-review` on a
-    # PR. The command runs the privileged `pull_request_target` workflow with the
-    # OrcaRouter secret, so only maintainers (owner/member/collaborator) may
-    # trigger it — otherwise any participant could burn paid quota and spam
-    # reviews without pushing new commits.
+    # Run on PR events, or when a trusted user comments the review command on a
+    # PR. All four spellings are accepted — either prefix (`/` or `@`) with
+    # either separator (hyphen or space) — which is the same set the OrcaCode
+    # Review GitHub App takes. Accept the full cross or you build a trap: a
+    # reader who writes the one spelling you left out gets no run and no error
+    # to explain why. The command runs the privileged `pull_request_target`
+    # workflow with the OrcaRouter secret, so only maintainers
+    # (owner/member/collaborator) may trigger it — otherwise any participant
+    # could burn paid quota and spam reviews without pushing new commits.
     if: |
       github.event_name == 'pull_request_target' ||
       (github.event_name == 'issue_comment' &&
         github.event.issue.pull_request &&
-        startsWith(github.event.comment.body, '/orca-code-review') &&
+        (startsWith(github.event.comment.body, '/orcacode-review') ||
+          startsWith(github.event.comment.body, '/orcacode review') ||
+          startsWith(github.event.comment.body, '@orcacode-review') ||
+          startsWith(github.event.comment.body, '@orcacode review')) &&
         contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association))
     steps:
       - uses: Continuum-AI-Corp/orca-code-review@v1
@@ -51,7 +58,7 @@ jobs:
           orcarouter-api-key: ${{ secrets.ORCAROUTER_API_KEY }}
           # All optional — uncomment to override the defaults:
           # orcarouter-url: ${{ secrets.ORCAROUTER_URL }}
-          # brand: "Orca-Code-Review"
+          # brand: "OrcaCode Review"
           # router: "orcarouter/code-review"  # router whose DSL picks the model per tier
           # fix-first: "P0,P1"   # withhold the strong tier until these are fixed
           # block-on: "P0"       # fail the check (block merge) on these

@@ -1,22 +1,11 @@
 # Run the Node test suite on Linux.
 #
-# WHY THIS EXISTS: the suite under scripts/*.test.mjs had no CI job at all, so it
-# only ever ran on contributor laptops. On Windows several of these tests die with
-# a native libuv abort (exit 0xC0000409, "Assertion failed: !(handle->flags &
-# UV_HANDLE_CLOSING), src/win/async.c") rather than a real assertion failure. Since
-# many tests assert on the exit code of a spawned child (e.g. report.test.mjs
-# asserts `r.status === 0`), that crash is indistinguishable from a genuine bug
-# when read from a Windows terminal. Linux is both the real runtime for this action
-# and free of that libuv bug, so this job is the authoritative verdict.
+# Node 20 is what action.yml pins via actions/setup-node, so it is the version
+# the tested code actually runs on. Node 24 is included to catch forward-compat
+# breakage before a runner bump.
 #
-# The matrix is deliberate:
-#   20 - the version the action itself pins (actions/setup-node in action.yml).
-#        This is what the tested code actually runs on in production.
-#   24 - current Node; catches forward-compat breakage before a runner bump and
-#        matches what contributors tend to have installed locally.
-#
-# No secrets are required: the tests spin up loopback HTTP servers and use dummy
-# credentials, so this is safe to run on fork PRs.
+# The tests bind loopback HTTP servers and use dummy credentials, so no secrets
+# are required.
 
 name: Test
 
@@ -36,7 +25,6 @@ jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
-      # Report every version's result, not just the first failure.
       fail-fast: false
       matrix:
         node-version: ["20", "24"]
@@ -47,11 +35,7 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
 
-      - name: node --version
-        run: node --version
-
       # Unquoted on purpose: the shell expands the glob into an explicit file
       # list. `node --test` only gained native glob support in Node 21, so a
       # quoted pattern would be read as a literal filename on the Node 20 leg.
-      - name: Run tests
-        run: node --test scripts/*.test.mjs
+      - run: node --test scripts/*.test.mjs

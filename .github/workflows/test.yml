@@ -1,0 +1,41 @@
+# Run the Node test suite on Linux.
+#
+# Node 20 is what action.yml pins via actions/setup-node, so it is the version
+# the tested code actually runs on. Node 24 is included to catch forward-compat
+# breakage before a runner bump.
+#
+# The tests bind loopback HTTP servers and use dummy credentials, so no secrets
+# are required.
+
+name: Test
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ["20", "24"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      # Unquoted on purpose: the shell expands the glob into an explicit file
+      # list. `node --test` only gained native glob support in Node 21, so a
+      # quoted pattern would be read as a literal filename on the Node 20 leg.
+      - run: node --test scripts/*.test.mjs

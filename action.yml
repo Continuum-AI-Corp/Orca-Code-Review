@@ -1,4 +1,4 @@
-# Orca-Code-Review — reusable composite action.
+# OrcaCode Review — reusable composite action.
 #
 # Consumers reference this with `uses:` instead of copying the folder; see
 # workflows/orca-code-review.yml for the ~15-line example workflow.
@@ -35,7 +35,7 @@
 # (scripts/report.mjs) posts severity counts — never code — to the OrcaRouter
 # control plane after the gate.
 
-name: "Orca-Code-Review"
+name: "OrcaCode Review"
 description: "AI PR review via the OrcaRouter gateway — cost-tiered cascade with a severity merge gate."
 author: "OrcaRouter"
 
@@ -58,7 +58,7 @@ inputs:
   brand:
     description: "Name shown on PR comments."
     required: false
-    default: "Orca-Code-Review"
+    default: "OrcaCode Review"
   router:
     description: >-
       OrcaRouter router alias (orcarouter/<name>) that owns model selection.
@@ -84,7 +84,7 @@ inputs:
       paid cascades by opening PRs — set e.g.
       "OWNER,MEMBER,COLLABORATOR,CONTRIBUTOR" to auto-review only known
       contributors (others can still be reviewed on demand via
-      /orca-code-review). Also set a wallet budget + alert on the key.
+      /orcacode-review). Also set a wallet budget + alert on the key.
       Case-insensitive; values: OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR,
       FIRST_TIME_CONTRIBUTOR, FIRST_TIMER, MANNEQUIN, NONE.
     required: false
@@ -165,6 +165,29 @@ inputs:
       raise to be stricter.
     required: false
     default: "0.5"
+  concurrency:
+    description: >-
+      Max concurrent file reviews. Raise to shorten wall clock on large diffs;
+      lower it if your model has a tight per-minute request quota. Empty uses
+      the engine default.
+    required: false
+    default: "24"
+  max-tools:
+    description: >-
+      Max tool-call rounds per file. Lowering it reduces cost and time but can
+      cost review depth. Empty uses the engine default.
+    required: false
+    default: ""
+  meter:
+    description: >-
+      Record per-call token accounting for the run (prompt / completion /
+      cached tokens and the model the router resolved) and print a totals table
+      in the job log, so a run's real token cost is visible. Local only —
+      nothing is uploaded, and the file is removed with the other run files.
+      Soft-fail: metering never alters or blocks a review. Set "false" to skip
+      it.
+    required: false
+    default: "true"
 
 runs:
   using: "composite"
@@ -187,7 +210,7 @@ runs:
           "$RUNNER_TEMP/cr-facts.json" "$RUNNER_TEMP/proxy.out" "$RUNNER_TEMP/proxy.err" \
           "$RUNNER_TEMP/policy-block.json" \
           "$RUNNER_TEMP/pr.diff" "$RUNNER_TEMP/diff-guard.json" "$RUNNER_TEMP/prev-summary.md" \
-          "$RUNNER_TEMP/wallclock-timeout" \
+          "$RUNNER_TEMP/wallclock-timeout" "$RUNNER_TEMP/cr-usage.jsonl" \
           "$RUNNER_TEMP/result.l1.json" "$RUNNER_TEMP/result.l2.json" \
           "$RUNNER_TEMP/result-extra.l1.json" "$RUNNER_TEMP/result-extra.l2.json"
 
@@ -270,7 +293,7 @@ runs:
         if [ -n "${PR_NUMBER:-}" ]; then
           react "repos/$REPO/issues/$PR_NUMBER/reactions"
         fi
-        # For a maintainer's /orca-code-review command, also react on that
+        # For a maintainer's /orcacode-review command, also react on that
         # trigger comment so the operator sees direct feedback on THEIR comment.
         if [ "$EVENT_NAME" = "issue_comment" ] && [ -n "${COMMENT_ID:-}" ]; then
           react "repos/$REPO/issues/comments/$COMMENT_ID/reactions"
@@ -331,7 +354,7 @@ runs:
         # Auto-event gate -> sets DECISION/REASON. Only AUTO runs are gated —
         # any pull_request* event, so a hand-written plain `pull_request`
         # workflow honors gating exactly like the documented
-        # `pull_request_target` one. An explicit `/orca-code-review` comment
+        # `pull_request_target` one. An explicit `/orcacode-review` comment
         # command (issue_comment) always proceeds — on-demand mode exists
         # precisely for those, and a human asking for a review of a
         # draft/disabled repo is deliberate. Shared by both settings paths so the
@@ -461,7 +484,8 @@ runs:
             `${MARKER}\n## 🐳 ${brand}\n\n` +
             `⏸️ **Automatic review is off for this PR** (${process.env.REASON}).\n\n` +
             `The check **passes** — this never blocks your merge. A maintainer can still ` +
-            `run a review on demand by commenting \`/orca-code-review\`, or change the ` +
+            `run a review on demand by commenting \`/orcacode-review\` ` +
+            `(\`@orcacode review\` works too), or change the ` +
             `repo's review settings in the OrcaRouter dashboard.` +
             footer;
 
@@ -681,6 +705,13 @@ runs:
         RESULT_EXTRA: ${{ runner.temp }}/result-extra.json
         RESULT_MERGED: ${{ runner.temp }}/result-merged.json
         FACTS_FILE: ${{ runner.temp }}/cr-facts.json
+        # Per-call token accounting (see the `meter` input). Empty disables the
+        # tap entirely inside the proxy.
+        CONCURRENCY: ${{ inputs.concurrency }}
+        MAX_TOOLS: ${{ inputs.max-tools }}
+        METER: ${{ inputs.meter }}
+        USAGE_FILE: ${{ runner.temp }}/cr-usage.jsonl
+        USAGE_SUMMARY: ${{ github.action_path }}/scripts/usage-summary.mjs
         # The proxy writes the guardrail/firewall reason here on a block; a later
         # always()-step posts it to the PR (the cascade itself fails closed).
         POLICY_BLOCK: ${{ runner.temp }}/policy-block.json
@@ -709,6 +740,10 @@ runs:
         echo '{}' > "$FACTS_FILE"
         : > "$RUNNER_TEMP/proxy.out"
         : > "$RUNNER_TEMP/proxy.err"
+        # Metering is opt-out; an empty CR_USAGE_FILE turns the tap off in the proxy.
+        CR_USAGE_FILE=""
+        if [ "$METER" = "true" ]; then CR_USAGE_FILE="$USAGE_FILE"; fi
+        export CR_USAGE_FILE
         CR_FACTS_FILE="$FACTS_FILE" CR_POLICY_BLOCK_FILE="$POLICY_BLOCK" node "$PROXY" > "$RUNNER_TEMP/proxy.out" 2> "$RUNNER_TEMP/proxy.err" &
         PROXY_PID=$!
         trap 'kill "$PROXY_PID" 2>/dev/null || true' EXIT
@@ -787,9 +822,15 @@ runs:
           # engine ignored the term. Redirections apply to whatever `timeout`
           # runs — i.e. ocr's own stdout/stderr — so the JSON result and log
           # end up in the same files as before.
+          # Engine tuning flags are only passed when set, so an empty input
+          # leaves the engine's own default in place rather than forcing a value.
+          ENGINE_FLAGS=""
+          [ -n "$CONCURRENCY" ] && ENGINE_FLAGS="$ENGINE_FLAGS --concurrency $CONCURRENCY"
+          [ -n "$MAX_TOOLS" ] && ENGINE_FLAGS="$ENGINE_FLAGS --max-tools $MAX_TOOLS"
+          # shellcheck disable=SC2086
           timeout --kill-after=10s "${TIMEOUT_MIN}m" \
             ocr review --from "$BASE" --to "$HEAD" \
-              --background "$(cat "$BACKGROUND")" --format json \
+              --background "$(cat "$BACKGROUND")" --format json $ENGINE_FLAGS \
               > "$1" 2> "$REVIEW_LOG" || rc=$?
           cat "$REVIEW_LOG"
           # 124 = GNU timeout tripped (SIGTERM); 137 = 128+9, i.e. --kill-after
@@ -954,6 +995,14 @@ runs:
         # >1 only in exhaustive mode; the summary comment notes it.
         echo "passes=$PASSES" >> "$GITHUB_OUTPUT"
 
+        # Token accounting for this run. Purely informational and soft-fail:
+        # `|| true` so a metering bug can never turn a completed review red.
+        if [ "$METER" = "true" ] && [ -s "$USAGE_FILE" ]; then
+          echo "::group::Token accounting"
+          node "$USAGE_SUMMARY" "$USAGE_FILE" || true
+          echo "::endgroup::"
+        fi
+
     # If a dashboard guardrail/firewall blocked the request, the cascade above
     # failed closed and the normal review comment never runs. Surface the reason
     # on the PR so the block is actionable, not just a red X with a log line.
@@ -1046,7 +1095,7 @@ runs:
             try {
               await github.rest.issues.createLabel({
                 ...repo, name, color: '0e8a16',
-                description: 'Orca-Code-Review: promoted to the strong model tier',
+                description: 'OrcaCode Review: promoted to the strong model tier',
               });
               core.info(`Created repository label ${name}.`);
             } catch (e2) {
@@ -1397,6 +1446,6 @@ runs:
           "$RUNNER_TEMP/cr-facts.json" "$RUNNER_TEMP/proxy.out" "$RUNNER_TEMP/proxy.err" \
           "$RUNNER_TEMP/policy-block.json" \
           "$RUNNER_TEMP/pr.diff" "$RUNNER_TEMP/diff-guard.json" "$RUNNER_TEMP/prev-summary.md" \
-          "$RUNNER_TEMP/wallclock-timeout" \
+          "$RUNNER_TEMP/wallclock-timeout" "$RUNNER_TEMP/cr-usage.jsonl" \
           "$RUNNER_TEMP/result.l1.json" "$RUNNER_TEMP/result.l2.json" \
           "$RUNNER_TEMP/result-extra.l1.json" "$RUNNER_TEMP/result-extra.l2.json"

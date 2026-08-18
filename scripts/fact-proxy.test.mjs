@@ -29,7 +29,7 @@ import { fileURLToPath } from "node:url";
 import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
 
-import { createProxyServer } from "./fact-proxy.mjs";
+import { createProxyServer, createRateLimiter } from "./fact-proxy.mjs";
 
 const PROXY_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "fact-proxy.mjs");
 let dir;
@@ -543,6 +543,432 @@ describe("client disconnect (OCR hangs up mid-relay)", () => {
     const cli = src.slice(src.indexOf("CLI entry"));
     assert.match(cli, /process\.on\(\s*["']uncaughtException["']/, "the proxy CLI must install an uncaughtException backstop");
     assert.doesNotMatch(cli, /uncaughtException[\s\S]*?process\.exit/, "the backstop must NOT exit — one bad client can't take the proxy down");
+  });
+});
+
+// Metering (CR_USAGE_FILE): per-call token accounting is what makes a model's
+// real per-review cost measurable, so the records must be accurate — but the
+// tap must stay strictly non-invasive. The relayed bytes, the status, and the
+// retry header are all part of the contract these tests pin.
+describe("usage metering (CR_USAGE_FILE)", () => {
+  const readMeter = (path) =>
+    readFileSync(path, "utf8")
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => JSON.parse(l));
+
+  const bodyWithUsage = (extra = {}) =>
+    JSON.stringify({
+      id: "cmpl-1",
+      model: "vendor/model-a",
+      choices: [{ message: { content: "ok" }, finish_reason: "stop" }],
+      usage: {
+        prompt_tokens: 8000,
+        completion_tokens: 120,
+        total_tokens: 8120,
+        prompt_tokens_details: { cached_tokens: 6300 },
+        ...extra,
+      },
+    });
+
+  test("each relayed call appends one record with prompt/completion/cached tokens and the RESOLVED model", async () => {
+    const usageFile = join(dir, "usage-basic.jsonl");
+    const upstream = await startUpstream([{ status: 200, body: bodyWithUsage() }]);
+    const proxy = await startProxy({
+      upstreamUrl: `http://127.0.0.1:${upstream.port}/v1/chat/completions`,
+      usageFile,
+    });
+    try {
+      // The request names the ALIAS; the meter must record what came back.
+      const res = await request(proxy.port, { body: '{"model":"orcarouter/code-review"}' });
+      assert.equal(res.status, 200);
+      assert.equal(res.body, bodyWithUsage(), "the relayed body must be byte-identical — the tap only observes");
+
+      const rows = readMeter(usageFile);
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].prompt, 8000);
+      assert.equal(rows[0].completion, 120);
+      assert.equal(rows[0].total, 8120);
+      assert.equal(rows[0].cached, 6300, "cached_tokens drives the real bill — it must be captured");
+      assert.equal(rows[0].model, "vendor/model-a", "records the model the gateway resolved, not the alias");
+      assert.equal(rows[0].status, 200);
+      assert.equal(rows[0].seq, 1);
+    } finally {
+      await proxy.close();
+      await upstream.close();
+    }
+  });
+
+  test("calls are numbered in order, so call COUNT (a cost driver for tool-looping models) is recoverable", async () => {
+    const usageFile = join(dir, "usage-seq.jsonl");
+    const upstream = await startUpstream([{ status: 200, body: bodyWithUsage() }]);
+    const proxy = await startProxy({
+      upstreamUrl: `http://127.0.0.1:${upstream.port}/v1/chat/completions`,
+      usageFile,
+    });
+    try {
+      for (let i = 0; i < 3; i += 1) await request(proxy.port, { body: '{"model":"m"}' });
+      const rows = readMeter(usageFile);
+      assert.deepEqual(
+        rows.map((r) => r.seq),
+        [1, 2, 3],
+      );
+    } finally {
+      await proxy.close();
+      await upstream.close();
+    }
+  });
+
+  test("alternate cached-token spellings (nested / flat) are all captured", async () => {
+    const usageFile = join(dir, "usage-alt.jsonl");
+    const upstream = await startUpstream([
+      {
+        status: 200,
+        body: JSON.stringify({
+          model: "vendor/model-b",
+          usage: { prompt_tokens: 100, completion_tokens: 5, prompt_cache_hit_tokens: 64 },
+        }),
+      },
+    ]);
+    const proxy = await startProxy({
+      upstreamUrl: `http://127.0.0.1:${upstream.port}/v1/chat/completions`,
+      usageFile,
+    });
+    try {
+      await request(proxy.port, { body: "{}" });
+      assert.equal(readMeter(usageFile)[0].cached, 64);
+    } finally {
+      await proxy.close();
+      await upstream.close();
+    }
+  });
+
+  test("a body with no usage block still records a row (nulls), so a run's call count stays honest", async () => {
+    const usageFile = join(dir, "usage-none.jsonl");
+    const upstream = await startUpstream([{ status: 200, body: '{"model":"m","choices":[]}' }]);
+    const proxy = await startProxy({
+      upstreamUrl: `http://127.0.0.1:${upstream.port}/v1/chat/completions`,
+      usageFile,
+    });
+    try {
+      await request(proxy.port, { body: "{}" });
+      const rows = readMeter(usageFile);
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].prompt, null);
+      assert.equal(rows[0].cached, 0);
+    } finally {
+      await proxy.close();
+      await upstream.close();
+    }
+  });
+
+  test("an attempt that never gets a response is metered — a hung gateway must not read as an idle model", async () => {
+    const usageFile = join(dir, "usage-noresp.jsonl");
+    // Upstream that accepts the connection then destroys it without answering.
+    const upstream = await startRawUpstream((req, res) => res.socket.destroy());
+    const sleep = fakeSleep();
+    const proxy = await startProxy({
+      upstreamUrl: `http://127.0.0.1:${upstream.port}/v1/chat/completions`,
+      usageFile,
+      sleep: sleep.fn,
+    });
+    try {
+      const res = await request(proxy.port, { body: "{}" });
+      assert.equal(res.status, 502);
+      const rows = readMeter(usageFile);
+      assert.equal(rows.length, 1, "the failed call must still produce a row");
+      assert.equal(rows[0].status, 0, "status 0 marks 'no response received'");
+      assert.equal(rows[0].prompt, null, "no tokens were reported, so none are invented");
+      assert.ok(rows[0].error, "the failure reason is recorded");
+    } finally {
+      await proxy.close();
+      await upstream.close();
+    }
+  });
+
+  test("a guardrail-blocked 400 is metered too — an all-blocked run must not read as free", async () => {
+    const usageFile = join(dir, "usage-block.jsonl");
+    const policyBlockFile = join(dir, "usage-block-policy.json");
+    const upstream = await startUpstream([
+      {
+        status: 400,
+        body: JSON.stringify({
+          error: { code: "guardrail_blocked", message: 'blocked by guardrail "secrets": a rule' },
+        }),
+      },
+    ]);
+    const proxy = await startProxy({
+      upstreamUrl: `http://127.0.0.1:${upstream.port}/v1/chat/completions`,
+      usageFile,
+      policyBlockFile,
+    });
+    try {
+      const res = await request(proxy.port, { body: "{}" });
+      assert.equal(res.status, 400);
+      // The block record must still be written — metering must not displace it.
+      assert.equal(JSON.parse(readFileSync(policyBlockFile, "utf8")).kind, "guardrail");
+      const rows = readMeter(usageFile);
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].status, 400);
+    } finally {
+      await proxy.close();
+      await upstream.close();
+    }
+  });
+
+  test("usage is extracted from the TAIL of a body far larger than the tail cap (memory stays flat)", async () => {
+    const usageFile = join(dir, "usage-big.jsonl");
+    // 2 MB of filler ahead of the usage block: a whole-body buffer is exactly
+    // what the tap must avoid, and a tail scan must still find the numbers.
+    const filler = "x".repeat(2 * 1024 * 1024);
+    const upstream = await startUpstream([
+      {
+        status: 200,
+        body: JSON.stringify({
+          model: "big/model",
+          choices: [{ message: { content: filler } }],
+          usage: { prompt_tokens: 42, completion_tokens: 7, total_tokens: 49 },
+        }),
+      },
+    ]);
+    const proxy = await startProxy({
+      upstreamUrl: `http://127.0.0.1:${upstream.port}/v1/chat/completions`,
+      usageFile,
+    });
+    try {
+      const res = await request(proxy.port, { body: "{}" });
+      assert.equal(res.status, 200);
+      assert.ok(res.body.length > 2 * 1024 * 1024, "the full body still reaches the client");
+      const rows = readMeter(usageFile);
+      assert.equal(rows[0].prompt, 42);
+      assert.equal(rows[0].total, 49);
+    } finally {
+      await proxy.close();
+      await upstream.close();
+    }
+  });
+
+  test("nested usage objects parse correctly (a non-greedy regex would truncate them)", async () => {
+    const usageFile = join(dir, "usage-nested.jsonl");
+    const upstream = await startUpstream([
+      {
+        status: 200,
+        body: JSON.stringify({
+          model: "m",
+          usage: {
+            prompt_tokens: 10,
+            prompt_tokens_details: { cached_tokens: 4, audio_tokens: 0 },
+            completion_tokens_details: { reasoning_tokens: 3 },
+            completion_tokens: 6,
+            total_tokens: 16,
+          },
+        }),
+      },
+    ]);
+    const proxy = await startProxy({
+      upstreamUrl: `http://127.0.0.1:${upstream.port}/v1/chat/completions`,
+      usageFile,
+    });
+    try {
+      await request(proxy.port, { body: "{}" });
+      const rows = readMeter(usageFile);
+      assert.equal(rows[0].completion, 6, "fields AFTER the nested objects must still be read");
+      assert.equal(rows[0].cached, 4);
+      assert.equal(rows[0].total, 16);
+    } finally {
+      await proxy.close();
+      await upstream.close();
+    }
+  });
+
+  test("metering off (no CR_USAGE_FILE) writes nothing and changes no behaviour", async () => {
+    const upstream = await startUpstream([{ status: 200, body: bodyWithUsage() }]);
+    const proxy = await startProxy({
+      upstreamUrl: `http://127.0.0.1:${upstream.port}/v1/chat/completions`,
+    });
+    try {
+      const res = await request(proxy.port, { body: "{}" });
+      assert.equal(res.status, 200);
+      assert.equal(res.body, bodyWithUsage());
+      assert.equal(res.headers["x-cr-retry-count"], "0");
+    } finally {
+      await proxy.close();
+      await upstream.close();
+    }
+  });
+
+  test("an unwritable usage path never fails the review (metering is soft-fail)", async () => {
+    const upstream = await startUpstream([{ status: 200, body: bodyWithUsage() }]);
+    const proxy = await startProxy({
+      upstreamUrl: `http://127.0.0.1:${upstream.port}/v1/chat/completions`,
+      // A directory that does not exist — every append throws ENOENT.
+      usageFile: join(dir, "no-such-dir", "usage.jsonl"),
+    });
+    try {
+      const res = await request(proxy.port, { body: "{}" });
+      assert.equal(res.status, 200, "the review must succeed even though metering cannot write");
+      assert.equal(res.body, bodyWithUsage());
+    } finally {
+      await proxy.close();
+      await upstream.close();
+    }
+  });
+
+  test("only the FINAL attempt of a retried call is metered (no double-billing in the record)", async () => {
+    const usageFile = join(dir, "usage-retry.jsonl");
+    const sleep = fakeSleep();
+    const upstream = await startUpstream([
+      { status: 429 },
+      { status: 200, body: bodyWithUsage() },
+    ]);
+    const proxy = await startProxy({
+      upstreamUrl: `http://127.0.0.1:${upstream.port}/v1/chat/completions`,
+      usageFile,
+      sleep: sleep.fn,
+    });
+    try {
+      const res = await request(proxy.port, { body: "{}" });
+      assert.equal(res.status, 200);
+      const rows = readMeter(usageFile);
+      assert.equal(rows.length, 1, "the discarded 429 is drained, not metered");
+      assert.equal(rows[0].retries, 1, "but the retry count is recorded");
+      assert.equal(rows[0].prompt, 8000);
+    } finally {
+      await proxy.close();
+      await upstream.close();
+    }
+  });
+});
+
+// Rate ceiling (CR_MAX_RPM). Some models enforce a hard, unraisable per-minute
+// request quota. Without a client-side ceiling the engine's per-file fan-out
+// overshoots it, the gateway 429s, and the retry path converts that into
+// backoff sleeps that eat the job's wall-clock budget.
+describe("rate limiting (CR_MAX_RPM)", () => {
+  // Virtual clock: the limiter's waits are minute-scale, so tests must never
+  // sleep for real. `sleep` advances the clock instead of waiting.
+  function fakeClock() {
+    let t = 1_000_000;
+    return {
+      now: () => t,
+      sleep: (ms) => {
+        t += ms;
+        return Promise.resolve();
+      },
+      advance: (ms) => {
+        t += ms;
+      },
+      at: () => t,
+    };
+  }
+
+  test("admits up to maxRpm within a minute, then defers the next until the window slides", async () => {
+    const clk = fakeClock();
+    const lim = createRateLimiter({ maxRpm: 3, sleep: clk.sleep, now: clk.now });
+    const t0 = clk.at();
+    for (let i = 0; i < 3; i += 1) await lim.acquire();
+    assert.equal(clk.at(), t0, "the first maxRpm requests are admitted with no delay");
+
+    await lim.acquire(); // 4th must wait for the oldest of the 3 to age out
+    assert.ok(clk.at() >= t0 + 60_000, `4th request waited past the window (t=${clk.at() - t0}ms)`);
+  });
+
+  test("never exceeds maxRpm in any 60s window, even under a concurrent burst", async () => {
+    const clk = fakeClock();
+    const maxRpm = 5;
+    const lim = createRateLimiter({ maxRpm, sleep: clk.sleep, now: clk.now });
+    const admitted = [];
+    // 20 callers all acquire at once — the real engine fan-out pattern.
+    await Promise.all(
+      Array.from({ length: 20 }, () => lim.acquire().then(() => admitted.push(clk.now()))),
+    );
+    assert.equal(admitted.length, 20);
+    for (const t of admitted) {
+      const inWindow = admitted.filter((x) => x > t - 60_000 && x <= t).length;
+      assert.ok(inWindow <= maxRpm, `window ending at ${t} admitted ${inWindow} > ${maxRpm}`);
+    }
+  });
+
+  test("maxRpm unset or 0 disables throttling entirely (zero added latency)", async () => {
+    const clk = fakeClock();
+    for (const maxRpm of [0, undefined]) {
+      const lim = createRateLimiter({ maxRpm, sleep: clk.sleep, now: clk.now });
+      const t0 = clk.at();
+      for (let i = 0; i < 500; i += 1) await lim.acquire();
+      assert.equal(clk.at(), t0, `maxRpm=${maxRpm} must not delay anything`);
+    }
+  });
+
+  test("a rejected admission does not wedge the queue for later callers", async () => {
+    const clk = fakeClock();
+    let calls = 0;
+    const flaky = (ms) => {
+      calls += 1;
+      if (calls === 1) return Promise.reject(new Error("boom"));
+      return clk.sleep(ms);
+    };
+    const lim = createRateLimiter({ maxRpm: 1, sleep: flaky, now: clk.now });
+    await lim.acquire();
+    // Forces a wait, whose first sleep rejects.
+    await lim.acquire().catch(() => {});
+    // The queue must still serve the next caller rather than hanging forever.
+    await assert.doesNotReject(lim.acquire());
+  });
+
+  test("retries consume quota too — a replayed request is billed like a fresh one", async () => {
+    // 429 then 200: the proxy must take TWO rate-limit slots for one client
+    // request, otherwise a 429 storm silently doubles the real request rate.
+    const clk = fakeClock();
+    const upstream = await startUpstream([{ status: 429 }, { status: 200, body: "ok" }]);
+    const proxy = await startProxy({
+      upstreamUrl: `http://127.0.0.1:${upstream.port}/v1/chat/completions`,
+      sleep: clk.sleep,
+      now: clk.now,
+      maxRpm: 1, // only ONE slot per minute, so the retry must wait a window
+    });
+    try {
+      const res = await request(proxy.port, { body: "{}" });
+      assert.equal(res.status, 200);
+      assert.equal(res.headers["x-cr-retry-count"], "1");
+      assert.equal(upstream.seen.length, 2, "both attempts reached upstream");
+      // Virtual clock advanced by ~a full window => the retry waited for a slot.
+      assert.ok(
+        clk.at() >= 1_000_000 + 60_000,
+        `the retry acquired a fresh slot rather than bypassing the ceiling (advanced ${clk.at() - 1_000_000}ms)`,
+      );
+    } finally {
+      await proxy.close();
+      await upstream.close();
+    }
+  });
+
+  test("throttled requests still relay normally end-to-end", async () => {
+    const clk = fakeClock();
+    const upstream = await startUpstream([{ status: 200, body: '{"ok":true}' }]);
+    const proxy = await startProxy({
+      upstreamUrl: `http://127.0.0.1:${upstream.port}/v1/chat/completions`,
+      sleep: clk.sleep,
+      now: clk.now,
+      maxRpm: 2,
+    });
+    try {
+      for (let i = 0; i < 4; i += 1) {
+        const res = await request(proxy.port, { body: '{"model":"m"}' });
+        assert.equal(res.status, 200);
+        assert.equal(res.body, '{"ok":true}');
+      }
+      assert.equal(upstream.seen.length, 4);
+    } finally {
+      await proxy.close();
+      await upstream.close();
+    }
+  });
+
+  test("the CLI reads CR_MAX_RPM", () => {
+    const cli = readFileSync(PROXY_SCRIPT, "utf8");
+    assert.match(cli, /CR_MAX_RPM/, "CR_MAX_RPM must be wired in the CLI entry");
+    assert.match(cli, /maxRpm/, "and mapped onto the maxRpm option");
   });
 });
 

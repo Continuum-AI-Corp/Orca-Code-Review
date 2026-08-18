@@ -13,7 +13,7 @@ import {
   REGION_END,
 } from "./inject-summary.mjs";
 
-const SUMMARY = "<!-- orca-code-review-summary -->\n## Orca-Code-Review — push 1\n\n✅ no blocking findings";
+const SUMMARY = "<!-- orca-code-review-summary -->\n## OrcaCode Review — push 1\n\n✅ no blocking findings";
 
 describe("injectSummary", () => {
   test("prepends the region to the top on first insert, keeping author text below", () => {
@@ -78,7 +78,7 @@ describe("extractRegion", () => {
 
   test("recovers the machine-state line the next push reads to number itself", () => {
     const withState =
-      "<!-- orca-code-review-summary -->\n<!-- orca-cr-state: {\"p0\":0,\"p1\":1,\"p2\":2,\"push\":3} -->\n\n## Orca-Code-Review — push 3";
+      "<!-- orca-code-review-summary -->\n<!-- orca-cr-state: {\"p0\":0,\"p1\":1,\"p2\":2,\"push\":3} -->\n\n## OrcaCode Review — push 3";
     const region = extractRegion(injectSummary("x", withState));
     const m = region.match(/<!-- orca-cr-state: (\{.*?\}) -->/);
     assert.ok(m, "state line survives the round-trip");

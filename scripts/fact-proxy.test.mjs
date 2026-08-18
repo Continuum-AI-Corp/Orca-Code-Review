@@ -839,6 +839,78 @@ describe("usage metering (CR_USAGE_FILE)", () => {
       await upstream.close();
     }
   });
+
+  test("records the model even when the body outgrows the metering tail", async () => {
+    const usageFile = join(dir, "usage-bigbody.jsonl");
+    // `model` at the top, `usage` at the bottom, and more than the tail's worth
+    // of content between them — the shape of a non-streaming call with a large
+    // completion. A tail-only tap keeps the tokens but loses the model, and a
+    // record usage-summary cannot price is the one thing metering must not emit.
+    const big = JSON.stringify({
+      id: "cmpl-big",
+      model: "vendor/model-a",
+      choices: [{ message: { content: "x".repeat(96 * 1024) }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 8000, completion_tokens: 120, total_tokens: 8120 },
+    });
+    assert.ok(big.length > 64 * 1024, "fixture must exceed the tail or it proves nothing");
+    const upstream = await startUpstream([{ status: 200, body: big }]);
+    const proxy = await startProxy({
+      upstreamUrl: `http://127.0.0.1:${upstream.port}/v1/chat/completions`,
+      usageFile,
+    });
+    try {
+      const res = await request(proxy.port, { body: "{}" });
+      assert.equal(res.status, 200);
+      assert.equal(res.body, big, "the relayed body is still byte-identical");
+      const rows = readMeter(usageFile);
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].model, "vendor/model-a", "model comes from the head; the tail alone is null here");
+      assert.equal(rows[0].prompt, 8000, "usage still comes from the tail");
+    } finally {
+      await proxy.close();
+      await upstream.close();
+    }
+  });
+
+  test("asks upstream for identity encoding while metering — a gzip body would meter nothing", async () => {
+    const usageFile = join(dir, "usage-identity.jsonl");
+    const upstream = await startUpstream([{ status: 200, body: bodyWithUsage() }]);
+    const proxy = await startProxy({
+      upstreamUrl: `http://127.0.0.1:${upstream.port}/v1/chat/completions`,
+      usageFile,
+    });
+    try {
+      // Go's net/http adds this header on its own, so the engine asks for
+      // compression without being configured to — this is the default path.
+      await request(proxy.port, { body: "{}", headers: { "accept-encoding": "gzip, br" } });
+      assert.equal(
+        upstream.seen[0].headers["accept-encoding"],
+        "identity",
+        "the tap reads raw bytes, so a compressed body would leave every field null",
+      );
+    } finally {
+      await proxy.close();
+      await upstream.close();
+    }
+  });
+
+  test("leaves accept-encoding alone when metering is off", async () => {
+    const upstream = await startUpstream([{ status: 200, body: bodyWithUsage() }]);
+    const proxy = await startProxy({
+      upstreamUrl: `http://127.0.0.1:${upstream.port}/v1/chat/completions`,
+    });
+    try {
+      await request(proxy.port, { body: "{}", headers: { "accept-encoding": "gzip, br" } });
+      assert.equal(
+        upstream.seen[0].headers["accept-encoding"],
+        "gzip, br",
+        "no tap to feed, so nothing justifies giving up compression",
+      );
+    } finally {
+      await proxy.close();
+      await upstream.close();
+    }
+  });
 });
 
 // Rate ceiling (CR_MAX_RPM). Some models enforce a hard, unraisable per-minute

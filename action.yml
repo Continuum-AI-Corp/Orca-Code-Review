@@ -711,7 +711,6 @@ runs:
         MAX_TOOLS: ${{ inputs.max-tools }}
         METER: ${{ inputs.meter }}
         USAGE_FILE: ${{ runner.temp }}/cr-usage.jsonl
-        USAGE_SUMMARY: ${{ github.action_path }}/scripts/usage-summary.mjs
         # The proxy writes the guardrail/firewall reason here on a block; a later
         # always()-step posts it to the PR (the cascade itself fails closed).
         POLICY_BLOCK: ${{ runner.temp }}/policy-block.json
@@ -995,8 +994,21 @@ runs:
         # >1 only in exhaustive mode; the summary comment notes it.
         echo "passes=$PASSES" >> "$GITHUB_OUTPUT"
 
-        # Token accounting for this run. Purely informational and soft-fail:
-        # `|| true` so a metering bug can never turn a completed review red.
+    # Token accounting for this run — a separate always() step rather than the
+    # tail of the review shell above. That shell `exit 1`s on wall-clock timeout,
+    # unusable engine output, and policy blocks, and those are precisely the runs
+    # whose token spend you most want to see: the tokens were spent either way.
+    # The final cleanup step deletes cr-usage.jsonl, so accounting not printed
+    # here is gone for good. Soft-fail throughout — metering reports on a run's
+    # verdict, it never changes it.
+    - name: Token accounting
+      if: always()
+      shell: bash
+      env:
+        METER: ${{ inputs.meter }}
+        USAGE_FILE: ${{ runner.temp }}/cr-usage.jsonl
+        USAGE_SUMMARY: ${{ github.action_path }}/scripts/usage-summary.mjs
+      run: |
         if [ "$METER" = "true" ] && [ -s "$USAGE_FILE" ]; then
           echo "::group::Token accounting"
           node "$USAGE_SUMMARY" "$USAGE_FILE" || true

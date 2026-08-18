@@ -109,6 +109,13 @@ const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // tail is sufficient — and it keeps the proxy's memory flat regardless of how
 // large the completion is.
 const USAGE_TAIL_BYTES = 64 * 1024;
+// ...but `model` sits near the START of that same body, so the tail alone loses
+// it once the body outgrows the tail — reachable on a non-streaming call with a
+// large completion. A record with model:null is one usage-summary groups under
+// "(unknown)" and cannot price, which is the whole point of metering. Keep a
+// small head too; `model` appears within the first few hundred bytes, so this
+// stays bounded and the proxy's memory stays flat.
+const USAGE_HEAD_BYTES = 4 * 1024;
 
 // Client-side request-rate ceiling (CR_MAX_RPM). Some models enforce a hard
 // per-minute request quota that cannot be raised. The engine fans out per-file
@@ -193,7 +200,10 @@ function extractModel(text) {
 
 // Append one metering record. Never throws: a full disk or a bad path must not
 // fail a review that otherwise succeeded.
-function recordUsage(tailText, { usageFile, status, retries, seq, error = null }) {
+// `headText` is the start of the same response when the caller has it (the tap
+// keeps one); callers holding the WHOLE body may omit it, since the tail is then
+// the whole body too.
+function recordUsage(tailText, { usageFile, status, retries, seq, error = null, headText = null }) {
   if (!usageFile) return;
   try {
     const usage = extractUsage(tailText);
@@ -209,7 +219,7 @@ function recordUsage(tailText, { usageFile, status, retries, seq, error = null }
         seq,
         status,
         retries,
-        model: extractModel(tailText),
+        model: (headText ? extractModel(headText) : null) ?? extractModel(tailText),
         prompt: usage?.prompt_tokens ?? null,
         completion: usage?.completion_tokens ?? null,
         total: usage?.total_tokens ?? null,
@@ -319,6 +329,14 @@ export function createProxyServer({
     const mySeq = usageFile ? ++callSeq : 0;
     const headers = { ...req.headers };
     delete headers.host; // must match upstream, not the loopback proxy
+    // The metering tap reads raw response bytes, so a gzip/br body would leave
+    // every token field null. This is the DEFAULT path rather than an edge case:
+    // Go's net/http adds `Accept-Encoding: gzip` on its own and decompresses
+    // transparently, so the engine asks for compression without being told to.
+    // Ask upstream for identity while metering — the cost is one
+    // loopback-to-gateway compression win, and the alternative is a meter that
+    // silently measures nothing.
+    if (usageFile) headers["accept-encoding"] = "identity";
     Object.assign(headers, readFacts(factsFile));
     const target = new URL(req.url, upstream);
 
@@ -405,7 +423,12 @@ export function createProxyServer({
       // consume them, so the relay below is byte-for-byte unchanged.
       if (usageFile) {
         let tail = Buffer.alloc(0);
+        let head = Buffer.alloc(0); // carries `model`; see USAGE_HEAD_BYTES
         upRes.on("data", (c) => {
+          if (head.length < USAGE_HEAD_BYTES) {
+            // Copy out of the concat so the slice does not retain it.
+            head = Buffer.from(Buffer.concat([head, c]).subarray(0, USAGE_HEAD_BYTES));
+          }
           const joined = tail.length ? Buffer.concat([tail, c]) : c;
           tail =
             joined.length > USAGE_TAIL_BYTES
@@ -413,7 +436,13 @@ export function createProxyServer({
               : joined;
         });
         upRes.on("end", () => {
-          recordUsage(tail.toString("utf8"), { usageFile, status, retries, seq: mySeq });
+          recordUsage(tail.toString("utf8"), {
+            usageFile,
+            status,
+            retries,
+            seq: mySeq,
+            headText: head.toString("utf8"),
+          });
         });
       }
       res.writeHead(status, outHeaders);

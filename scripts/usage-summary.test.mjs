@@ -59,8 +59,8 @@ function run(args) {
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
 }
 
-// The flag order matters: the file is the first argv entry not starting with
-// "--", so the usage file must precede --pricing. That is the documented order.
+// Most cases below use the documented order (usage file first); the
+// "argument order" block pins that the reverse order works too.
 function runJson(args) {
   const r = run([...args, "--json"]);
   assert.equal(r.status, 0, r.stderr);
@@ -156,6 +156,59 @@ describe("best-effort input handling", () => {
     const out = JSON.parse(r.stdout);
     assert.equal(out.prompt_tokens, 1000, "tokens are still reported");
     assert.equal(out.usd, null, "but nothing is priced");
+  });
+});
+
+describe("argument order", () => {
+  // A flag's value is not a positional argument. --pricing takes a path, and a
+  // path does not start with "--", so a "first non-flag argv entry" scan used
+  // to pick the price list as the usage file when the flag came first. It
+  // failed silently: a price list is valid JSON, so it parsed as one metering
+  // row with no token fields and reported a run that cost nothing.
+  test("--pricing before the usage file does not steal it", () => {
+    const usage = writeUsage([{ model: "m", prompt: 1_000_000 }]);
+    const pricing = writePricing([{ model_name: "m", model_ratio: 1 }]);
+    const r = run(["--pricing", pricing, usage, "--json"]);
+    assert.equal(r.status, 0, r.stderr);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.prompt_tokens, 1_000_000, "the usage file must be read, not the price list");
+    assert.equal(out.usd, 2, "and the price list must still be applied");
+  });
+
+  test("both orders produce the same result", () => {
+    const usage = writeUsage([{ model: "m", prompt: 500_000, completion: 1000 }]);
+    const pricing = writePricing([{ model_name: "m", model_ratio: 1 }]);
+    const flagFirst = JSON.parse(run(["--pricing", pricing, usage, "--json"]).stdout);
+    const fileFirst = JSON.parse(run([usage, "--pricing", pricing, "--json"]).stdout);
+    assert.deepEqual(flagFirst, fileFirst);
+  });
+
+  test("the first positional wins; a stray extra one does not override it", () => {
+    const usage = writeUsage([{ model: "m", prompt: 10 }]);
+    const other = writeUsage([{ model: "m", prompt: 999 }]);
+    const out = JSON.parse(run([usage, other, "--json"]).stdout);
+    assert.equal(out.prompt_tokens, 10);
+  });
+
+  test("--json is recognized wherever it appears", () => {
+    const usage = writeUsage([{ model: "m", prompt: 7 }]);
+    const out = JSON.parse(run(["--json", usage]).stdout);
+    assert.equal(out.prompt_tokens, 7);
+  });
+
+  test("a valueless --pricing does not swallow the flag after it", () => {
+    const usage = writeUsage([{ model: "m", prompt: 7 }]);
+    const r = run([usage, "--pricing", "--json"]);
+    assert.equal(r.status, 0, r.stderr);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.prompt_tokens, 7, "--json must still be honored");
+    assert.equal(out.usd, null, "no price list was supplied");
+  });
+
+  test("a trailing --pricing with nothing after it is harmless", () => {
+    const usage = writeUsage([{ model: "m", prompt: 7 }]);
+    const r = run([usage, "--pricing"]);
+    assert.equal(r.status, 0, r.stderr);
   });
 });
 

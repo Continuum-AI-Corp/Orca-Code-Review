@@ -29,13 +29,28 @@ import fs from "node:fs";
 
 const USD_PER_1M_AT_RATIO_1 = 2.0;
 
+// One pass, because a flag's VALUE is not a positional argument. --pricing
+// takes a path, and a path does not start with "--", so scanning separately
+// for "the first argv entry that isn't a flag" picks up the price list as the
+// usage file whenever --pricing comes first. That failure is silent rather
+// than loud: a price list is itself valid JSON, so it parses as a single
+// metering row with no token fields and reports a run that cost nothing.
+// Advancing the index past a flag's value keeps both argument orders working.
 const argv = process.argv.slice(2);
-const file = argv.find((a) => !a.startsWith("--"));
+let file = null;
 let pricingPath = null;
 let asJson = false;
 for (let i = 0; i < argv.length; i += 1) {
-  if (argv[i] === "--pricing") pricingPath = argv[i + 1];
-  else if (argv[i] === "--json") asJson = true;
+  if (argv[i] === "--pricing") {
+    // Only consume the next entry when it is actually a value. A trailing
+    // --pricing, or one followed by another flag, must not swallow that flag.
+    const next = argv[i + 1];
+    if (next !== undefined && !next.startsWith("--")) {
+      pricingPath = next;
+      i += 1;
+    }
+  } else if (argv[i] === "--json") asJson = true;
+  else if (!argv[i].startsWith("--") && file === null) file = argv[i];
 }
 if (!file) {
   console.error("usage: node usage-summary.mjs <usage.jsonl> [--pricing pricing.json] [--json]");

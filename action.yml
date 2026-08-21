@@ -36,11 +36,11 @@
 # control plane after the gate.
 
 name: "OrcaCode Review"
-description: "AI PR review via the OrcaRouter gateway — cost-tiered cascade with a severity merge gate."
+description: "AI code review for every pull request, powered by OrcaRouter"
 author: "OrcaRouter"
 
 branding:
-  icon: "git-pull-request"
+  icon: "eye"
   color: "blue"
 
 inputs:

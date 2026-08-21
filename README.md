@@ -1,6 +1,6 @@
-# [OrcaCode Review](https://www.orcarouter.ai/code-review)
+# OrcaCode Review
 
-**AI code review that catches serious issues before they merge — powered by ****[OrcaRouter](https://www.orcarouter.ai/)****.**
+**[AI code review](https://www.orcarouter.ai/code-review) that catches serious issues before they merge — powered by ****[OrcaRouter](https://www.orcarouter.ai/)****.**
 
 Automatically review every pull request, post findings directly on the affected lines, and block serious issues from merging.
 

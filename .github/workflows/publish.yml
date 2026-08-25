@@ -137,6 +137,40 @@ jobs:
             console.log("tarball ok — " + files.length + " files");
           '
 
+      # Install the real tarball and run it through npm's real `.bin` shim.
+      #
+      # This exists because 1.0.0 shipped a CLI that did nothing. npm installs a
+      # `bin` as a symlink, so argv[1] is the link while import.meta.url is its
+      # target; the entry-point guard compared them without realpath and was
+      # false for every npx and every global install. The process exited 0
+      # having printed nothing, and every check above passed. `node bin/...`
+      # never takes that path, so only an actual install can catch its kind.
+      - name: Smoke-test the packed tarball
+        if: steps.check.outputs.needed == 'true'
+        run: |
+          set -euo pipefail
+          TARBALL="$PWD/$(npm pack --json | node -pe 'JSON.parse(require("fs").readFileSync(0,"utf8"))[0].filename')"
+          SMOKE=$(mktemp -d)
+          cd "$SMOKE"
+          npm init -y >/dev/null 2>&1
+          npm install --no-audit --no-fund --silent "$TARBALL"
+
+          SHIM=./node_modules/.bin/orcacode-review
+          test -L "$SHIM" || echo "::warning::$SHIM is not a symlink — this platform cannot exercise that path"
+
+          PRINTED=$("$SHIM" --version)
+          echo "shim printed: '$PRINTED'"
+          if [ "$PRINTED" != "${{ steps.check.outputs.version }}" ]; then
+            echo "::error::the installed bin printed '$PRINTED', expected '${{ steps.check.outputs.version }}'." \
+                 "An empty value means the entry-point guard rejected npm's symlink."
+            exit 1
+          fi
+
+          # A real subcommand, so the check covers more than argument parsing.
+          "$SHIM" skill list --lang en | grep -q "claude" || {
+            echo "::error::\`skill list\` did not list the platform catalog"; exit 1; }
+          echo "tarball smoke test passed"
+
       - name: Publish
         if: steps.check.outputs.needed == 'true'
         run: npm publish --access public --provenance

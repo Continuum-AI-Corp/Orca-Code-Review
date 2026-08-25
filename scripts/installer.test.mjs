@@ -8,12 +8,65 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 import {
   DEFAULTS,
   renderWorkflow,
   parseOverrides,
 } from "../bin/orcacode-review.mjs";
+
+const CLI = fileURLToPath(new URL("../bin/orcacode-review.mjs", import.meta.url));
+
+// --------------------------------------------------------------- entry point ---
+
+test("the CLI runs when executed through a symlink", () => {
+  // npm installs a `bin` as a SYMLINK at node_modules/.bin/<name>, so argv[1]
+  // is the link and import.meta.url is its target. An entry-point guard that
+  // compares them without realpath is false for every npx and every global
+  // install: the process exits 0 having printed nothing. Shipped as 1.0.0 and
+  // only caught by installing the published tarball, because running
+  // `node bin/orcacode-review.mjs` directly never takes that path.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ocr-bin-"));
+  const link = path.join(dir, "orcacode-review");
+  try {
+    fs.symlinkSync(CLI, link);
+  } catch (e) {
+    if (e.code === "EPERM" || e.code === "ENOSYS") return; // unprivileged Windows
+    throw e;
+  }
+
+  const r = spawnSync(process.execPath, [link, "--version"], { encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout.trim(), /^\d+\.\d+\.\d+$/, "no version printed — the guard rejected the symlink");
+});
+
+test("the CLI runs when executed by its real path", () => {
+  const r = spawnSync(process.execPath, [CLI, "--version"], { encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout.trim(), /^\d+\.\d+\.\d+$/);
+});
+
+test("importing the CLI runs nothing", () => {
+  // The guard's other half: a bare import must not start the interactive flow.
+  const r = spawnSync(
+    process.execPath,
+    ["--input-type=module", "-e", `import(${JSON.stringify(CLI)}).then(m => console.log(Object.keys(m).sort().join(",")))`],
+    { encoding: "utf8" },
+  );
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout.trim(), "DEFAULTS,parseOverrides,readOverrides,renderWorkflow");
+});
+
+test("the published version matches package.json", () => {
+  const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  const r = spawnSync(process.execPath, [CLI, "--version"], { encoding: "utf8" });
+  assert.equal(r.stdout.trim(), pkg.version);
+});
 
 const withBlock = (yaml) =>
   yaml.slice(yaml.indexOf("        with:")).split("\n").slice(1).filter((l) => l.trim());

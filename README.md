@@ -95,6 +95,8 @@ export ORCACODE_LANG=zh                # 固定下来
 
 Guided flows open with a language screen when `--lang` is not given. Add `--no-banner` to skip the wordmark.
 
+Menus are arrow-key driven — `↑↓` to move, `Enter` to pick. Multi-select adds `space` to toggle, `a`/`n` for all/none, and `/` to filter (`ctrl-u` clears it), which is how you find one agent among 36 without scrolling. Terminals without raw mode fall back to typing a number.
+
 Only prose is translated — flags, platform IDs, workflow inputs, and shell commands stay verbatim, because you still have to type them.
 
 ---

@@ -64,7 +64,7 @@ revert each make "the previous commit" the wrong thing to compare against, and
 that failure is silent in both directions — a missed release, or a publish that
 dies on E409.
 
-Four gates run before the point of no return, and each one fails the job:
+Five gates run before the point of no return, and each one fails the job:
 
 1. `package.json`, `.claude-plugin/plugin.json`, and
    `.claude-plugin/marketplace.json` all carry the same version.
@@ -73,6 +73,17 @@ Four gates run before the point of no return, and each one fails the job:
 3. The full test suite passes.
 4. The tarball actually contains `bin/` and the skill — a tarball missing them
    publishes cleanly and only fails on the user's first `npx`.
+5. The packed tarball is installed into a scratch project and run through npm's
+   own `node_modules/.bin` shim, asserting it prints the expected version and
+   that `skill list` produces the catalog.
+
+Gate 5 exists because 1.0.0 shipped a CLI that did nothing. npm installs a `bin`
+as a **symlink**, so `argv[1]` is the link while `import.meta.url` is its
+target; the entry-point guard compared the two without `realpath` and was false
+for every `npx` and every global install. The process exited 0 having printed
+nothing, and gates 1–4 all passed. Running `node bin/orcacode-review.mjs` never
+takes that path, so nothing short of a real install can catch that class of bug.
+`scripts/installer.test.mjs` now also execs the CLI through a symlink.
 
 npm's unpublish window is 72 hours and a withdrawn version number can never be
 reused, so anything checkable before publishing is checked there rather than

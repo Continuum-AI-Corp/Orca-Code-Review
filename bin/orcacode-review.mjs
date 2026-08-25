@@ -24,7 +24,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline/promises";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
 import { SKILL_PLATFORMS, POPULAR_PLATFORM_IDS, findPlatform, detectPlatforms, resolveTargets } from "./platforms.mjs";
@@ -904,10 +904,25 @@ async function main() {
 
 // Only run when invoked as a program. Importing this file (the test suite does)
 // must not touch the filesystem or open a readline interface.
-const invokedDirectly =
-  process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+//
+// Both sides are resolved through realpath before comparing. npm installs a
+// `bin` as a SYMLINK at node_modules/.bin/<name>, so argv[1] is the link while
+// import.meta.url is the link's target — comparing them raw is false for every
+// npx and every global install, and the CLI exits 0 having done nothing at all.
+// That failure is invisible when testing with `node bin/orcacode-review.mjs`,
+// which is why installer.test.mjs now execs through a symlink.
+function invokedDirectly() {
+  if (!process.argv[1]) return false;
+  try {
+    return fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    // A path that cannot be resolved (deleted, permission-denied) is not a
+    // direct invocation we can prove — stay quiet rather than run by accident.
+    return false;
+  }
+}
 
-if (invokedDirectly) {
+if (invokedDirectly()) {
   main()
     .catch((e) => die(e?.message || String(e)))
     .finally(closeUi);

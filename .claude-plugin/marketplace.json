@@ -1,0 +1,20 @@
+{
+  "name": "orca",
+  "owner": {
+    "name": "Continuum-AI-Corp",
+    "url": "https://github.com/Continuum-AI-Corp"
+  },
+  "metadata": {
+    "description": "Skills for OrcaRouter products.",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "orca-code-review",
+      "source": "./",
+      "description": "Set up, reconfigure, troubleshoot, and remove OrcaCode Review — AI pull-request review powered by OrcaRouter — in any GitHub repository.",
+      "category": "code-review",
+      "keywords": ["code-review", "github-actions", "ci", "pull-request"]
+    }
+  ]
+}

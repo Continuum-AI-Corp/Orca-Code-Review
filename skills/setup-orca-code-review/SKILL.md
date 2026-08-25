@@ -1,0 +1,214 @@
+---
+name: setup-orca-code-review
+description: Install, reconfigure, troubleshoot, or uninstall OrcaCode Review (AI pull-request review powered by OrcaRouter) in a GitHub repository. Use when the user asks to "set up AI code review", "install OrcaCode Review", "add the orca-code-review action", change which severities block merges, fix a review that is not running or not posting, or remove the review workflow.
+---
+
+# OrcaCode Review setup
+
+OrcaCode Review is a GitHub composite action that reviews every pull request with
+an LLM, posts findings as inline comments, and fails a status check when serious
+issues are found. Model selection lives in OrcaRouter, not in the workflow file.
+
+**Severity contract:** `P0` critical / `P1` high → ❌ block. `P2` advisory → 💬 comment.
+
+## Pick the route
+
+Read the user's request and jump straight to the matching section. Do not run the
+install flow on a repo that already has the workflow — go to **Reconfigure** instead.
+
+| The user wants to… | Go to |
+| --- | --- |
+| Add review to a repo for the first time | [Install](#install) |
+| Change blocking rules, diff limits, or where config lives | [Reconfigure](#reconfigure) |
+| Fix reviews that don't run, don't post, or always fail | [Troubleshoot](#troubleshoot) |
+| Remove OrcaCode Review | [Uninstall](#uninstall) |
+
+Run this first in every route — it tells you which one applies:
+
+```bash
+git rev-parse --show-toplevel && \
+  gh repo view --json nameWithOwner,visibility,defaultBranchRef 2>/dev/null; \
+  ls .github/workflows/ 2>/dev/null | grep -i 'orca\|code-review'
+```
+
+If `gh` is missing or unauthenticated, everything still works — you just hand the
+user web URLs instead of running commands. Say so once and move on.
+
+## Install
+
+### 1. Preflight
+
+Confirm all three, and stop with a specific message if any fails:
+
+- Inside a git work tree with a GitHub `origin` remote.
+- No existing OrcaCode workflow (if there is one → **Reconfigure**).
+- Record the repo's `nameWithOwner`, `visibility`, and default branch — later steps need them.
+
+### 2. Ask for the key decisions
+
+Ask these with **one** `AskUserQuestion` call. Include the fourth question **only when
+`visibility` is `PUBLIC`** — it is a spend-control decision that does not exist on a
+private repo, and asking it there is noise.
+
+**Q1 — "Where should review settings live?"** (`settings` input)
+- *OrcaRouter dashboard (recommended)* → `settings: "true"`. Models, review mode,
+  severity rules, and rubric change from the console with no workflow edit. Dashboard
+  values win unless a `with:` input differs from its documented default.
+- *This workflow file* → `settings: "false"`. Skips the dashboard fetch entirely; the
+  YAML is authoritative and nothing server-side can override it. Pick this for repos
+  under change control.
+
+**Q2 — "Which findings should block the merge?"** (`block-on` input)
+- *P0 and P1 (recommended)* → `"P0,P1"`. The default contract.
+- *P0 only* → `"P0"`. Blocks only critical issues; P1 still posts inline.
+- *Nothing — comment only* → `""`. The check always passes. Good for a trial period.
+
+**Q3 — "What happens when a PR's diff is too large to review?"** (`on-oversized-diff`)
+- *Fail the check (recommended)* → `"fail"`. A diff padded past `max-diff-kb` /
+  `max-diff-files` cannot be used to slip past a required merge gate.
+- *Pass with a notice* → `"pass"`. The skip notice posts and the check stays green.
+
+**Q4 — public repos only — "Who gets an automatic review?"** (`auto-review-authors`)
+- *Known contributors only (recommended)* → `"OWNER,MEMBER,COLLABORATOR,CONTRIBUTOR"`.
+- *Everyone* → `""`.
+
+Say plainly why Q4 exists: the workflow runs on `pull_request_target` with your
+OrcaRouter secret, so on a public repo a stranger's PR can spend from your wallet.
+Also tell them to set a budget + alert on the key at <https://www.orcarouter.ai/console/token>.
+
+Everything else keeps its default. Do not ask about `judge-model`, `concurrency`,
+`engine-version`, or `precision-filter` during install — see `references/inputs.md`
+if the user brings them up unprompted.
+
+### 3. Write the workflow
+
+Copy `assets/workflow.yml` to `.github/workflows/orca-code-review.yml`, then set the
+four values from step 2 under `with:`. Omit any input the user left at its default —
+a workflow that only lists what it overrides stays readable and lets the dashboard own
+the rest.
+
+Keep the `if:` condition and the `on:` block exactly as shipped. They encode two things
+that are easy to break: `pull_request_target` is what lets a fork PR be reviewed at all,
+and the author-association check on `issue_comment` is what stops any drive-by commenter
+from spending your quota with `/orcacode-review`.
+
+Show the user the final file before committing.
+
+### 4. Add the API key secret
+
+The secret must be named exactly `ORCAROUTER_API_KEY`.
+
+**Never ask the user to paste the key into the chat, and never read it from a file.**
+It would land in the transcript. Instead, tell them to run it themselves in this session:
+
+```
+! gh secret set ORCAROUTER_API_KEY --repo <owner/name>
+```
+
+`gh` prompts for the value and it never reaches you. Without `gh`, send them to
+`https://github.com/<owner>/<name>/settings/secrets/actions/new`.
+
+They can create or copy a key at <https://www.orcarouter.ai/console/token>.
+
+Then verify it exists without revealing it:
+
+```bash
+gh secret list --repo <owner/name> | grep ORCAROUTER_API_KEY
+```
+
+### 5. Enable the app
+
+Point the user at **OrcaRouter → Apps → OrcaCode Review** (<https://www.orcarouter.ai/>)
+to turn the app on and choose review models. Reviews will not run until it is enabled.
+
+### 6. Commit and open a test PR
+
+Commit on a branch, push, and open a PR — do not commit straight to the default branch.
+The PR is also the test: the workflow must run against a real pull request to prove out.
+
+```bash
+gh pr create --fill && gh run watch
+```
+
+### 7. Make the gate real
+
+A passing check blocks nothing until it is required. Walk the user through
+**Settings → Branches / Rulesets → Require status checks to pass** and adding the
+**`review`** check, or offer to do it:
+
+```bash
+gh api -X PATCH repos/<owner>/<name>/branches/<default>/protection/required_status_checks \
+  -f 'checks[][context]=review'
+```
+
+Confirm before running — branch protection changes affect everyone on the repo.
+
+### 8. Report
+
+Tell the user, concretely: the workflow path, the settings you chose, whether the
+secret and required check are in place, and the result of the test run. If any step
+was skipped (no `gh`, protection not applied), say which and what they still owe.
+
+## Reconfigure
+
+Read the existing `.github/workflows/orca-code-review.yml` first, then check whether
+`settings: "false"` is set.
+
+**If the dashboard owns settings (`settings` absent or `"true"`)** — most knobs are not
+in the file. Review mode, models, exhaustive mode, quiet mode, rubric, and the
+fix-first/block-on tuning all live at **OrcaRouter → Apps → OrcaCode Review**. Send the
+user there rather than editing YAML, and explain the precedence rule: an input written
+in the file only wins if it differs from its documented default.
+
+**If the file is authoritative (`settings: "false"`)** — edit it. Ask with
+`AskUserQuestion` which knobs to change, offering only what is relevant:
+
+- Merge policy (`block-on`) and fix-first escalation (`fix-first`).
+- Diff limits (`max-diff-kb`, `max-diff-files`) and `on-oversized-diff`.
+- Precision filter (`precision-filter`, `judge-model`, `judge-threshold`).
+- Run reporting (`report`) and token metering (`meter`).
+
+`references/inputs.md` has every input, its default, and what it actually controls.
+Read it before answering a question about behavior — do not guess a default.
+
+State the before → after for each value you change, and note that the new settings take
+effect on the next push to any open PR.
+
+## Troubleshoot
+
+Gather evidence before theorizing:
+
+```bash
+gh run list --workflow orca-code-review.yml --limit 5
+gh run view <run-id> --log-failed
+```
+
+`references/troubleshooting.md` maps each symptom to its cause and fix. The four that
+account for most reports:
+
+- **No run at all** — the PR is a draft and `trigger` is `ready_for_review`, the author
+  is outside `auto-review-authors`, or the app is off in the dashboard.
+- **Run fails immediately, auth error** — `ORCAROUTER_API_KEY` is missing, misnamed, or
+  scoped to an environment the job cannot read.
+- **"Diff too large" notice and a red check** — expected behavior with
+  `on-oversized-diff: "fail"`. Split the PR, or raise `max-diff-kb` / `max-diff-files`.
+- **Reviews work but the console's Settings/Analytics tabs are empty** — `@v1` points at
+  a commit older than `scripts/settings.mjs` / `scripts/report.mjs`. There is no error
+  for this; verify with `git ls-tree v1 scripts/` against the action repo.
+
+Report the actual failing output, not a paraphrase of it.
+
+## Uninstall
+
+Confirm with the user first, then in this order:
+
+1. **Drop the required check** — remove `review` from branch protection *before* deleting
+   the workflow. A required check whose workflow no longer exists never reports, and every
+   PR blocks forever with no way to clear it.
+2. **Delete the workflow** — `rm .github/workflows/orca-code-review.yml`, commit, push.
+3. **Leave the secret** — say that `ORCAROUTER_API_KEY` is harmless to keep and is worth
+   keeping if they may reinstall. Delete it only if they ask.
+4. **Mention the dashboard** — turning the app off at **OrcaRouter → Apps → OrcaCode
+   Review** stops any remaining billing.
+
+Do not delete old review comments. They are part of the PR history.

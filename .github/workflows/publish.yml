@@ -177,6 +177,45 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+      # `npm publish` exiting 0 does not mean anyone can install it.
+      #
+      # A scoped package defaults to RESTRICTED. When 1.0.2 first went out the
+      # log read `+ @orcarouter/code-review@1.0.2` and the job was green, while
+      # the registry 404'd and the package page 403'd for everyone outside the
+      # org — despite both `--access public` and `publishConfig.access`.
+      #
+      # So: assert it, then prove it. `npm access set` is idempotent and fixes
+      # the state; the anonymous fetch is what actually decides, because it asks
+      # the question a user asks — can a stranger install this?
+      - name: Force public access
+        if: steps.check.outputs.needed == 'true'
+        continue-on-error: true # the verification below is the real gate
+        run: npm access set status=public "${{ steps.check.outputs.name }}"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Verify the published version is installable by a stranger
+        if: steps.check.outputs.needed == 'true'
+        run: |
+          set -uo pipefail
+          NAME='${{ steps.check.outputs.name }}'
+          VERSION='${{ steps.check.outputs.version }}'
+          # No auth header here on purpose — an authenticated read would succeed
+          # against a private package and prove nothing.
+          URL="https://registry.npmjs.org/$(node -pe 'encodeURIComponent(process.argv[1])' "$NAME")/$VERSION"
+          for attempt in 1 2 3 4 5 6; do
+            CODE=$(curl -sS -o /dev/null -w '%{http_code}' "$URL" || echo 000)
+            echo "attempt $attempt: HTTP $CODE"
+            if [ "$CODE" = "200" ]; then
+              echo "$NAME@$VERSION is publicly installable"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::$NAME@$VERSION published but is not anonymously readable (HTTP $CODE)."
+          echo "::error::Scoped packages default to restricted. Fix with: npm access set status=public $NAME"
+          exit 1
+
       - name: Summary
         if: steps.check.outputs.needed == 'true'
         run: |

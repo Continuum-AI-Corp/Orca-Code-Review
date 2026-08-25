@@ -1,7 +1,13 @@
 #!/usr/bin/env node
-// OrcaCode Review installer — `npx orcacode-review`.
+// OrcaCode Review skill installer — `npx @orcarouter/code-review`.
 //
-//   npx orcacode-review                interactive menu
+// The bare command installs the agent skill and stops. Configuring a repo,
+// retuning the gate, diagnosing a silent run and uninstalling are all things
+// the SKILL describes, carried out by the user's own agent — so this CLI does
+// not ask anyone about severities or diff limits. It puts the capability in
+// front of the agent and hands over.
+//
+//   npx @orcarouter/code-review        install the skill (36 platforms)
 //   npx orcacode-review init           write .github/workflows/orca-code-review.yml
 //   npx orcacode-review reconfigure    change the inputs in an existing workflow
 //   npx orcacode-review doctor         diagnose an install that is not working
@@ -731,16 +737,35 @@ async function cmdSkill(argv) {
   }
   if (results.some((r) => r.status === STATUS.error)) process.exitCode = 1;
 
-  const installed = results.filter((r) => r.status === STATUS.installed || r.status === STATUS.updated);
-  if (installed.length > 0) {
-    say();
-    info(t("skill.askAgent"));
-    if (installed.some((r) => r.platformIds.includes("claude"))) {
-      say(dim(t("skill.pluginHint")));
-      say(dim("    /plugin marketplace add Continuum-AI-Corp/orca-code-review"));
-      say(dim("    /plugin install orca-code-review"));
-    }
+  const landed = results.filter((r) => r.status !== STATUS.error);
+  if (landed.length > 0) handoff(landed);
+}
+
+// What the user reads last, so it is the only instruction they need to keep.
+function handoff(results) {
+  say();
+  say(bold(t("skill.handoffTitle")));
+  say();
+  say(`    ${cyan(t("skill.handoffPrimary"))}`);
+  say();
+  say(dim(t("skill.handoffMore")));
+  for (const [phrase, what] of [
+    [t("skill.handoffDoctor"), t("skill.handoffDoctorWhat")],
+    [t("skill.handoffTune"), t("skill.handoffTuneWhat")],
+    [t("skill.handoffRemove"), t("skill.handoffRemoveWhat")],
+  ]) {
+    say(`    ${phrase}  ${dim(`— ${what}`)}`);
   }
+
+  if (results.some((r) => r.platformIds.includes("claude"))) {
+    say();
+    say(dim(t("skill.pluginHint")));
+    say(dim("    /plugin marketplace add Continuum-AI-Corp/orca-code-review"));
+    say(dim("    /plugin install orca-code-review"));
+  }
+
+  say();
+  say(dim(t("skill.handoffCli")));
 }
 
 function cmdListPlatforms(argv) {
@@ -885,29 +910,22 @@ async function main() {
 
   ASSUME_YES = Boolean(argv.yes);
 
-  let cmd = argv._[0];
-  const guided = !cmd || (cmd === "skill" && argv._[1] !== "list" && !argv.list);
+  // The bare command installs the skill and stops. Everything OrcaCode Review
+  // can DO — write the workflow, retune the gate, diagnose a silent run,
+  // uninstall — is expressed as skill instructions the user's own agent
+  // carries out, so this CLI has no business interrogating anyone about
+  // severities. It hands the work over and gets out of the way.
+  //
+  // The subcommands still exist for scripting and for people who would rather
+  // not go through an agent; they are simply no longer the front door.
+  const cmd = argv._[0] ?? "skill";
+  const guided = cmd === "skill" && argv._[1] !== "list" && !argv.list;
 
-  // The wordmark and the language screen belong to the guided flows only.
-  // Putting them in front of `doctor` would just be noise on a diagnostic.
+  // The wordmark and the language screen belong to the guided flow only.
+  // In front of `doctor` they would be noise on a diagnostic.
   if (guided) {
     showBanner(argv);
     await askLanguage(argv);
-  }
-
-  if (!cmd) {
-    const state = repoState();
-    cmd = await select(
-      `${t("menu.question")}${state.installed ? dim(t("menu.alreadyInstalled")) : ""}`,
-      [
-        { label: t("menu.install"), value: "init", recommended: !state.installed },
-        { label: t("menu.reconfigure"), value: "reconfigure", recommended: state.installed },
-        { label: t("menu.doctor"), value: "doctor" },
-        { label: t("menu.skill", SKILL_PLATFORMS.length), value: "skill" },
-        { label: t("menu.uninstall"), value: "uninstall" },
-      ],
-      { defaultIndex: state.installed ? 1 : 0 },
-    );
   }
 
   switch (cmd) {

@@ -33,7 +33,10 @@ const CLEAR_BELOW = `${ESC}[0J`;
 
 // ------------------------------------------------------------------ width ---
 
-const ANSI = /\x1b\[[0-9;]*m/g;
+// Every CSI sequence, not just colour. Cursor show/hide and erase sequences
+// occupy no columns either, and a width that counted them would truncate a
+// line that fits.
+const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;
 
 // East Asian Wide / Fullwidth. Enough for the Chinese strings this ships with;
 // not a complete wcwidth, and it does not need to be.
@@ -53,12 +56,18 @@ function isWide(cp) {
 
 export function displayWidth(text) {
   let width = 0;
-  for (const ch of String(text).replace(ANSI, "")) width += isWide(ch.codePointAt(0)) ? 2 : 1;
+  for (const ch of String(text).replace(ANSI, "")) {
+    const cp = ch.codePointAt(0);
+    // C0 controls — carriage return above all — move the cursor without
+    // consuming a column. Counting them truncates lines that would have fit.
+    if (cp < 0x20 || cp === 0x7f) continue;
+    width += isWide(cp) ? 2 : 1;
+  }
   return width;
 }
 
 const RESET = `${ESC}[0m`;
-const ANSI_AT_START = /^\x1b\[[0-9;]*m/;
+const ANSI_AT_START = /^\x1b\[[0-9;?]*[A-Za-z]/;
 
 /**
  * Truncates to `max` display columns, ellipsis included in the budget.
@@ -143,8 +152,18 @@ class Screen {
     this.lines = lines.length;
   }
 
-  // Leaves the final frame on screen — the answer stays in scrollback.
-  done() {
+  /**
+   * Replaces the whole frame with a one-line summary.
+   *
+   * Without this every answered prompt stays fully expanded — five menus deep
+   * and the screen is a wall of options the user already dismissed, with the
+   * question they are actually on pushed off the top.
+   */
+  collapse(summary) {
+    const rewind = this.lines > 0 ? `${ESC}[${this.lines}A\r${CLEAR_BELOW}` : "";
+    // Truncated like any other line: a long question plus a long answer wraps,
+    // and a wrapped summary is the one line the user actually reads afterwards.
+    this.output.write(`${rewind}${truncate(summary, columns(this.output) - 1)}\n`);
     this.lines = 0;
   }
 }
@@ -245,7 +264,7 @@ export async function select(question, options, { defaultIndex = 0, theme, io = 
     return undefined;
   }, io);
 
-  screen.done();
+  screen.collapse(`${t.bold(question)}  ${t.cyan(options.find((o) => o.value === chosen).label)}`);
   return chosen;
 }
 
@@ -334,7 +353,8 @@ export async function multiSelect(question, options, { preselected = [], theme, 
     return undefined;
   }, io);
 
-  screen.done();
+  const names = options.filter((o) => result.includes(o.value)).map((o) => o.label);
+  screen.collapse(`${t.bold(question)}  ${t.cyan(names.join(", "))}`);
   return result;
 }
 

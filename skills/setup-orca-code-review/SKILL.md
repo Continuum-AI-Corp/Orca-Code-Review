@@ -1,9 +1,9 @@
 ---
 name: setup-orca-code-review
-description: Install, reconfigure, troubleshoot, or uninstall OrcaCode Review (AI pull-request review powered by OrcaRouter) in a GitHub repository. Use when the user asks to "set up AI code review", "install OrcaCode Review", "add the orca-code-review action", change which severities block merges, fix a review that is not running or not posting, or remove the review workflow.
+description: Set up, reconfigure, troubleshoot, or remove OrcaCode Review — AI pull-request review powered by OrcaRouter — in a GitHub repository. Handles the whole lifecycle end to end without asking the user to run a CLI. Use whenever the user mentions OrcaCode Review, OrcaRouter code review, "@orcarouter code review", or /orcacode-review, and whenever they ask to set up AI code review on a repo, add the orca-code-review action, change which severities block merges, find out why a review did not run or did not post findings, or take the review workflow back out.
 ---
 
-# OrcaCode Review setup
+# OrcaCode Review
 
 OrcaCode Review is a GitHub composite action that reviews every pull request with
 an LLM, posts findings as inline comments, and fails a status check when serious
@@ -11,17 +11,24 @@ issues are found. Model selection lives in OrcaRouter, not in the workflow file.
 
 **Severity contract:** `P0` critical / `P1` high → ❌ block. `P2` advisory → 💬 comment.
 
+## What you can do with this skill
+
+You carry out all of these yourself — writing files, running `gh`, and asking the
+user only for the decisions that are genuinely theirs. Never tell the user to go
+run an installer; that is what this skill replaces.
+
+| The user says something like… | You do |
+| --- | --- |
+| "set up OrcaCode Review here", "@orcarouter code review 帮我配置这个仓库" | [Install](#install) |
+| "only block P0", "move the config to the dashboard", "raise the diff limit" | [Reconfigure](#reconfigure) |
+| "why didn't the review run?", "no comments appeared", "the check is stuck red" | [Troubleshoot](#troubleshoot) |
+| "remove OrcaCode Review", "turn the review off" | [Uninstall](#uninstall) |
+| "what can OrcaCode Review do?" | Summarize this table and the severity contract. Do not dump the file. |
+
 ## Pick the route
 
-Read the user's request and jump straight to the matching section. Do not run the
-install flow on a repo that already has the workflow — go to **Reconfigure** instead.
-
-| The user wants to… | Go to |
-| --- | --- |
-| Add review to a repo for the first time | [Install](#install) |
-| Change blocking rules, diff limits, or where config lives | [Reconfigure](#reconfigure) |
-| Fix reviews that don't run, don't post, or always fail | [Troubleshoot](#troubleshoot) |
-| Remove OrcaCode Review | [Uninstall](#uninstall) |
+Jump straight to the section the table above points at. Do not run the install
+flow on a repo that already has the workflow — go to **Reconfigure** instead.
 
 Run this first in every route — it tells you which one applies:
 

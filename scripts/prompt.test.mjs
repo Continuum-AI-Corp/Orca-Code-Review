@@ -67,7 +67,9 @@ function harness({ columns = 80, rows = 24 } = {}) {
     }
   };
 
-  return { io: { input, output }, press, frames: () => written };
+  // `frame()` is the list as it stands right now — call it BEFORE the final
+  // Enter, since answering collapses the frame to a one-line summary.
+  return { io: { input, output }, press, frames: () => written, frame: () => lastFrame(written) };
 }
 
 // The last frame drawn — everything after the final cursor-up.
@@ -77,6 +79,9 @@ const lastFrame = (text) => text.split(/\x1b\[\d+A/).pop();
 
 test("display width counts CJK as two columns and ANSI as zero", () => {
   assert.equal(displayWidth("abc"), 3);
+  assert.equal(displayWidth("\x1b[?25habc"), 3); // cursor sequences are zero-width too
+  assert.equal(displayWidth("\x1b[0Jabc"), 3);
+  assert.equal(displayWidth("\rabc"), 3); // carriage return consumes no column
   assert.equal(displayWidth("安装"), 4);
   assert.equal(displayWidth("\x1b[1mabc\x1b[0m"), 3);
   assert.equal(displayWidth("修改配置 x"), 10);
@@ -198,23 +203,23 @@ test("defaultIndex decides where the cursor starts", async () => {
 });
 
 test("only the highlighted row shows its detail", async () => {
-  const { io, press, frames } = harness();
+  const { io, press, frame } = harness();
   const answer = select("What now?", OPTIONS, { theme: THEME, io });
+  const shown = frame();
+  assert.match(shown, /writes the workflow/);
+  assert.equal(shown.match(/writes the workflow/g).length, 1);
   await press(KEY.enter);
   await answer;
-  const frame = lastFrame(frames());
-  assert.match(frame, /writes the workflow/);
-  assert.equal(frame.match(/writes the workflow/g).length, 1);
 });
 
 test("a long list scrolls and reports what is off-screen", async () => {
   const many = Array.from({ length: 36 }, (_, i) => ({ label: `Item ${i}`, value: `i${i}` }));
-  const { io, press, frames } = harness({ rows: 20 }); // window of 12
+  const { io, press, frames, frame } = harness({ rows: 20 }); // window of 12
   const answer = select("Pick", many, { theme: THEME, io });
   await press(KEY.up); // wraps to the last item
+  assert.match(frames().split(/\x1b\[\d+A/).pop(), /↑ \d+ more/);
   await press(KEY.enter);
   assert.equal(await answer, "i35");
-  assert.match(lastFrame(frames()), /↑ \d+ more/);
 });
 
 test("every redraw rewinds exactly as many lines as it wrote", async () => {
@@ -240,7 +245,7 @@ test("no line is ever wider than the terminal", async () => {
   const answer = select("Pick", wide, { theme: THEME, io });
   await press(KEY.down, KEY.enter);
   await answer;
-  for (const line of frames().replace(/\x1b\[[\d;]*[A-Za-z]/g, "").split("\n")) {
+  for (const line of frames().replace(/\x1b\[[\d;?]*[A-Za-z]/g, "").split("\n")) {
     assert.ok(displayWidth(line) < 40, `line is ${displayWidth(line)} columns: ${line.slice(0, 50)}`);
   }
 });
@@ -307,32 +312,32 @@ test("/ filters, and selection survives clearing the filter", async () => {
 });
 
 test("backspace widens the filter again", async () => {
-  const { io, press, frames } = harness();
+  const { io, press, frame } = harness();
   const answer = multiSelect("Which?", PLATFORMS, { theme: THEME, io });
   await press("/", "c", "o", "d", "e", "x");
   await press(KEY.backspace, KEY.backspace); // back to "cod"
   await press(KEY.enter); // apply — "cod" matches claude, codex, codebuddy
+  assert.match(frame(), /CodeBuddy/);
   await press(KEY.space, KEY.enter); // first match is Claude Code
   assert.deepEqual(await answer, ["claude"]);
-  assert.match(lastFrame(frames()), /CodeBuddy/);
 });
 
 test("a filter matching nothing says so instead of drawing an empty box", async () => {
-  const { io, press, frames } = harness();
+  const { io, press, frame } = harness();
   const answer = multiSelect("Which?", PLATFORMS, { preselected: ["claude"], theme: THEME, io });
   await press("/", "z", "z", "z");
-  assert.match(lastFrame(frames()), /no match/);
+  assert.match(frame(), /no match/);
   await press(KEY.ctrlU); // ctrl-u, not Esc — see the test below
   await press(KEY.enter);
   assert.deepEqual(await answer, ["claude"]);
 });
 
 test("the running count is shown", async () => {
-  const { io, press, frames } = harness();
+  const { io, press, frame } = harness();
   const answer = multiSelect("Which?", PLATFORMS, { preselected: ["claude", "codex"], theme: THEME, io });
+  assert.match(frame(), /2 selected/);
   await press(KEY.enter);
   await answer;
-  assert.match(lastFrame(frames()), /2 selected/);
 });
 
 // ----------------------------------------------------------------- confirm ---
@@ -429,4 +434,50 @@ test("a lone Esc emits no keypress at all", async () => {
   assert.equal(keys, 0, "Esc was delivered on its own — reconsider the ctrl-u binding");
   await press(KEY.enter);
   assert.deepEqual(await answer, ["claude"]);
+});
+
+// ---------------------------------------------------------------- collapse ---
+
+test("answering a prompt replaces the list with one summary line", async () => {
+  // Five prompts deep, leaving each expanded buries the question the user is
+  // actually on under a wall of options they already dismissed.
+  const { io, press, frame } = harness();
+  const answer = select("What now?", OPTIONS, { theme: THEME, io });
+  assert.match(frame(), /Reconfigure/, "the list should be on screen while choosing");
+  await press(KEY.down, KEY.enter);
+  await answer;
+
+  const summary = frame();
+  assert.match(summary, /What now\?/);
+  assert.match(summary, /Reconfigure/);
+  assert.doesNotMatch(summary, /Doctor/, "unchosen options survived the collapse");
+  assert.doesNotMatch(summary, /↑↓/, "the key hint survived the collapse");
+  assert.equal(summary.split("\n").filter(Boolean).length, 1);
+});
+
+test("a multi-select collapses to the chosen names", async () => {
+  const { io, press, frame } = harness();
+  const answer = multiSelect("Which?", PLATFORMS, { preselected: ["claude", "cursor"], theme: THEME, io });
+  await press(KEY.enter);
+  await answer;
+
+  const summary = frame();
+  assert.match(summary, /Claude Code, Cursor/);
+  assert.doesNotMatch(summary, /\[ \]/, "unticked rows survived the collapse");
+  assert.equal(summary.split("\n").filter(Boolean).length, 1);
+});
+
+test("the collapse rewinds exactly the frame it is replacing", async () => {
+  // Off by one here and the summary overwrites a line of real output above it.
+  const { io, press, frames } = harness();
+  const answer = select("What now?", OPTIONS, { theme: THEME, io });
+  await press(KEY.enter);
+  await answer;
+
+  const chunks = frames().split(/(?=\x1b\[\d+A)/);
+  const last = chunks.at(-1);
+  const claimed = Number(/^\x1b\[(\d+)A/.exec(last)[1]);
+  const previous = chunks.at(-2);
+  const drawn = previous.replace(/^\x1b\[\d+A\r\x1b\[0J/, "").split("\n").length - 1;
+  assert.equal(claimed, drawn);
 });

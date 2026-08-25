@@ -33,26 +33,48 @@ Every PR starts with a fast, low-cost model. Once clear of P0/P1 issues, OrcaCod
 
 ---
 
-## One-command install
+## Install
 
-Either installer writes the workflow, guides you through the API key, and sets up the merge gate.
-
-**Terminal — no install required:**
+One command teaches your AI what OrcaCode Review is. Everything after that, you just ask for.
 
 ```bash
 npx @orcarouter/code-review
 ```
 
-**Claude Code — as a plugin:**
+It detects which coding agents you use, installs the skill, and stops. Then:
+
+> **you:** set up OrcaCode Review in this repo
+
+Your agent writes the workflow, walks you through the API key, and sets the merge gate — asking only the questions that are actually yours to answer.
+
+The same goes for everything else:
+
+| Say | It does |
+| --- | --- |
+| *"why didn't the review run?"* | Diagnoses the secret, the trigger, the base branch, the gate |
+| *"make OrcaCode Review block P0 only"* | Retunes the merge policy |
+| *"remove OrcaCode Review from this repo"* | Drops the required check first, then the workflow |
+| *"what can OrcaCode Review do?"* | Explains itself |
+
+**Claude Code** can install the skill as a plugin instead, which keeps it updated:
 
 ```text
 /plugin marketplace add Continuum-AI-Corp/orca-code-review
 /plugin install orca-code-review
 ```
 
-Then ask: *"set up OrcaCode Review in this repo"*. The skill also handles reconfiguring, troubleshooting, and uninstalling.
+### 36 agent platforms
 
-The CLI has the same lifecycle commands:
+The same catalog the [OrcaDub MCP server](https://github.com/Continuum-AI-Corp/orcadub-mcp-server) uses, so IDs and paths match across Orca products. Detected agents are pre-ticked; `/` filters the list.
+
+```bash
+npx @orcarouter/code-review skill list                    # all 36, detected ones marked
+npx @orcarouter/code-review --platform claude,codex --yes # unattended
+```
+
+### Terminal, without an agent
+
+The lifecycle is also available as plain subcommands — the skill is the front door, not the only door:
 
 ```bash
 npx @orcarouter/code-review init          # write the workflow
@@ -62,22 +84,6 @@ npx @orcarouter/code-review uninstall     # remove it (drops the merge gate firs
 ```
 
 Prefer to wire it by hand? The manual steps are below.
-
-### Use it from any agent
-
-The setup skill installs into **36 agent platforms** — the same catalog the [OrcaDub MCP server](https://github.com/Continuum-AI-Corp/orcadub-mcp-server) uses, so IDs and paths match across Orca products.
-
-```bash
-npx @orcarouter/code-review skill list      # all 36, with the ones detected here marked
-npx @orcarouter/code-review skill install   # pick from a checkbox list; detected agents pre-checked
-```
-
-Detected platforms are pre-selected. For unattended or agent-driven setup, name them:
-
-```bash
-npx @orcarouter/code-review skill install --platform claude --platform codex --scope project --yes
-npx @orcarouter/code-review skill install --platform cursor --scope global --yes
-```
 
 Claude Code, Cursor, Codex, OpenCode, Windsurf, Cline, RooCode, Continue, GitHub Copilot, Gemini CLI, Amazon Q Developer, Qwen Code, Kilo Code, Auggie, Kimi Code, Kiro, Lingma, Junie, CodeBuddy Code, CoStrict, Crush, Factory Droid, iFlow, Pi, Qoder, Antigravity, Antigravity 2.0, Bob Shell, ForgeCode, Trae, Trae CN, ZCode, MimoCode, Hermes, OpenClaw, Command Code.
 

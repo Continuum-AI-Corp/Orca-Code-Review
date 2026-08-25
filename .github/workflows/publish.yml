@@ -200,26 +200,39 @@ jobs:
           set -uo pipefail
           NAME='${{ steps.check.outputs.name }}'
           VERSION='${{ steps.check.outputs.version }}'
-          # No auth header here on purpose — an authenticated read would succeed
-          # against a private package and prove nothing.
-          URL="https://registry.npmjs.org/$(node -pe 'encodeURIComponent(process.argv[1])' "$NAME")/$VERSION"
-          # Three minutes. A brand-new version document takes a while to reach
-          # the public CDN edge — 1.1.0 needed longer than the first sixty
-          # seconds this waited, and failed a build that had shipped correctly.
-          # A restricted package and an unpropagated one both answer 404, so
-          # the status code cannot shorten this; only time can.
-          for attempt in $(seq 1 15); do
-            CODE=$(curl -sS -o /dev/null -w '%{http_code}' "$URL" || echo 000)
-            echo "attempt $attempt/15: HTTP $CODE"
-            if [ "$CODE" = "200" ]; then
-              echo "$NAME@$VERSION is publicly installable"
+          ENCODED=$(node -pe 'encodeURIComponent(process.argv[1])' "$NAME")
+
+          # Fetch the PACKUMENT, not the per-version document.
+          #
+          # `npm install` reads the packument and picks a version out of it, so
+          # that is the document whose freshness actually decides whether a
+          # stranger can install. The /<name>/<version> route is a colder path:
+          # it 404'd for more than three minutes after two correct publishes,
+          # failing builds that had shipped fine. Checking the wrong document
+          # was the bug, not the timeout.
+          #
+          # No auth header on purpose — an authenticated read succeeds against a
+          # restricted package and would prove nothing.
+          for attempt in $(seq 1 20); do
+            BODY=$(curl -sS -H 'Cache-Control: no-cache' "https://registry.npmjs.org/$ENCODED" || echo '')
+            FOUND=$(printf '%s' "$BODY" | node -pe '
+              try {
+                const d = JSON.parse(require("fs").readFileSync(0, "utf8"));
+                d.versions?.[process.argv[1]] ? "yes" : "no";
+              } catch { "no" }
+            ' "$VERSION" 2>/dev/null || echo no)
+
+            if [ "$FOUND" = "yes" ]; then
+              echo "$NAME@$VERSION is in the public packument — installable"
               exit 0
             fi
-            sleep 12
+            echo "attempt $attempt/20: not in the public packument yet"
+            sleep 15
           done
-          echo "::error::$NAME@$VERSION published but is still not anonymously readable after 3 minutes (HTTP $CODE)."
+
+          echo "::error::$NAME@$VERSION published but is absent from the public packument after 5 minutes."
           echo "::error::Either it is restricted — fix with: npm access set status=public $NAME"
-          echo "::error::or the CDN is unusually slow. Check $URL by hand before assuming the former."
+          echo "::error::or the CDN is unusually slow. Check https://registry.npmjs.org/$ENCODED by hand."
           exit 1
 
       - name: Summary

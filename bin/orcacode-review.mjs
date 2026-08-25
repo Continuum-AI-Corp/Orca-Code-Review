@@ -31,6 +31,7 @@ import { SKILL_PLATFORMS, POPULAR_PLATFORM_IDS, findPlatform, detectPlatforms, r
 import { installTree, STATUS } from "./skill-tree.mjs";
 import { makeT, detectLanguage, parseLanguage } from "./i18n.mjs";
 import { renderBanner } from "./banner.mjs";
+import * as tui from "./prompt.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = path.resolve(HERE, "..");
@@ -110,10 +111,50 @@ function requireInteractive(what) {
   die(t("common.nonTTY", what), t("common.nonTTYHint"));
 }
 
-// A numbered single-choice prompt. `options` is [{label, value, detail, recommended}].
+// Colours and strings the arrow-key prompts need, bound to the current
+// language. Rebuilt per call because the language screen can change `t`
+// halfway through a run.
+const theme = () => ({
+  bold, dim, cyan, green,
+  recommended: t("common.recommended"),
+  detected: t("common.detected"),
+  hintSelect: t("common.hintSelect"),
+  hintMulti: t("common.hintMulti"),
+  hintFiltering: t("common.hintFiltering"),
+  hintFilterLabel: t("common.hintFilterLabel"),
+  hintNoMatch: t("common.hintNoMatch"),
+  countSelected: (n) => t("common.countSelected", n),
+});
+
+// Arrow-key prompts when the terminal supports raw mode, typed answers when it
+// does not. The fallback is not dead code: it covers terminals without raw mode
+// and anything driving this over a pipe that still has a TTY on one side.
+
 async function select(question, options, { defaultIndex = 0 } = {}) {
   if (!requireInteractive(question)) return options[defaultIndex].value;
+  if (tui.canPrompt()) return tui.select(question, options, { defaultIndex, theme: theme() });
+  return selectTyped(question, options, { defaultIndex });
+}
 
+async function multiSelect(question, options, { preselected = [] } = {}) {
+  if (!requireInteractive(question)) {
+    return options.filter((o) => preselected.includes(o.value)).map((o) => o.value);
+  }
+  if (tui.canPrompt()) return tui.multiSelect(question, options, { preselected, theme: theme() });
+  return multiSelectTyped(question, options, { preselected });
+}
+
+async function confirm(question, defaultYes = true) {
+  if (!requireInteractive(question)) return defaultYes;
+  if (tui.canPrompt()) return tui.confirm(question, defaultYes, { theme: theme() });
+  const suffix = defaultYes ? "[Y/n]" : "[y/N]";
+  const raw = (await ui().question(`${bold(question)} ${dim(suffix)} `)).trim().toLowerCase();
+  if (raw === "") return defaultYes;
+  return raw === "y" || raw === "yes";
+}
+
+// A numbered single-choice prompt. `options` is [{label, value, detail, recommended}].
+async function selectTyped(question, options, { defaultIndex = 0 } = {}) {
   say();
   say(bold(question));
   options.forEach((o, i) => {
@@ -133,10 +174,8 @@ async function select(question, options, { defaultIndex = 0 } = {}) {
 
 // A numbered checkbox list. Accepts "1,3,5", ranges ("1-4"), "a" for all, and
 // bare Enter for the preselected set.
-async function multiSelect(question, options, { preselected = [] } = {}) {
+async function multiSelectTyped(question, options, { preselected = [] } = {}) {
   const chosen = new Set(preselected);
-  if (!requireInteractive(question)) return options.filter((o) => chosen.has(o.value)).map((o) => o.value);
-
   say();
   say(bold(question));
   options.forEach((o, i) => {
@@ -172,14 +211,6 @@ async function multiSelect(question, options, { preselected = [] } = {}) {
     return [...picked];
   }
   return [...chosen];
-}
-
-async function confirm(question, defaultYes = true) {
-  if (!requireInteractive(question)) return defaultYes;
-  const suffix = defaultYes ? "[Y/n]" : "[y/N]";
-  const raw = (await ui().question(`${bold(question)} ${dim(suffix)} `)).trim().toLowerCase();
-  if (raw === "") return defaultYes;
-  return raw === "y" || raw === "yes";
 }
 
 // The language screen, shown once at the top of a guided flow when --lang was

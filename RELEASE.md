@@ -107,14 +107,20 @@ Five gates run before the point of no return, and each one fails the job:
 And one gate *after* publishing, because that is the only place it can be
 checked:
 
-6. The new version is fetched from the registry **anonymously** and must return
-   200, retried for three minutes. `npm publish` exiting 0 does not mean anyone
-   can install what it shipped.
+6. The new version must appear in the **public packument**, fetched
+   anonymously and retried for five minutes. `npm publish` exiting 0 does not
+   mean anyone can install what it shipped.
 
-   The window is that long because a restricted package and one that simply has
-   not reached the CDN edge yet both answer 404 — the status code cannot tell
-   them apart, so only waiting can. A red gate 6 therefore means *check the URL
-   by hand* before assuming the package is private.
+   It polls `registry.npmjs.org/<name>` — the document `npm install` actually
+   reads to pick a version — rather than the `/<name>/<version>` route. That
+   distinction is not cosmetic: the per-version route stayed 404 for over three
+   minutes after two correct publishes and failed both builds. Checking a
+   document nobody installs from was the bug; the timeout was a symptom.
+
+   Anonymous on purpose — an authenticated read succeeds against a restricted
+   package and proves nothing. A restricted package and an unpropagated one
+   look alike, so a red gate 6 still means *check the URL by hand* before
+   concluding the package is private.
 
 Gate 6 exists because `@orcarouter/code-review@1.0.2` published green and was
 unreachable. Scoped packages default to **restricted**, and it landed that way

@@ -52,9 +52,46 @@ Settings/Analytics tabs described above, on their very first run.
 Package name is `orcacode-review` (one word, matching the product name and the
 `/orcacode-review` PR command); the repo and action stay `orca-code-review`.
 
+**Publishing is automatic.** To cut a release, bump `version` in `package.json`
+(and the two `.claude-plugin` files — see below) and merge to `main`. That is
+the whole procedure; do not run `npm publish` by hand.
+
+`.github/workflows/publish.yml` runs on every push to `main` and asks the
+registry whether that exact version exists. If it does, the job no-ops green.
+If it does not, it publishes. The check is deliberately *not* a diff of
+`package.json` against the previous commit: a squash merge, a force push, or a
+revert each make "the previous commit" the wrong thing to compare against, and
+that failure is silent in both directions — a missed release, or a publish that
+dies on E409.
+
+Four gates run before the point of no return, and each one fails the job:
+
+1. `package.json`, `.claude-plugin/plugin.json`, and
+   `.claude-plugin/marketplace.json` all carry the same version.
+2. The `v1` tag exists and ships `scripts/settings.mjs` + `scripts/report.mjs`,
+   because the installer generates a workflow pinned to `@v1`.
+3. The full test suite passes.
+4. The tarball actually contains `bin/` and the skill — a tarball missing them
+   publishes cleanly and only fails on the user's first `npx`.
+
+npm's unpublish window is 72 hours and a withdrawn version number can never be
+reused, so anything checkable before publishing is checked there rather than
+discovered afterward.
+
+Auth is the `NPM_TOKEN` repository secret. Use a **granular access token scoped
+to this one package**, not a classic automation token — a leaked classic token
+can publish anything in the account. Rotate with `gh secret set NPM_TOKEN`.
+
+The workflow creates **no git tags**. The npm version and the action's `v1.x`
+tags are separate version lines (the action is on v1.4.x while the CLI starts at
+1.0.0); tagging `v1.0.0` from a publish would collide with the action's series
+and could move consumers' `uses: ...@v1` onto the wrong commit. Action tags stay
+manual, per the section above.
+
+Smoke-test after a release:
+
 ```
-npm publish --access public          # from the merged commit, after `npm test`
-npx orcacode-review@latest doctor    # smoke-test the published tarball
+npx orcacode-review@latest skill list
 ```
 
 `files` in `package.json` ships only `bin/` and `skills/` — the action itself is

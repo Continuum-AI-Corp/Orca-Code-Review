@@ -101,27 +101,41 @@ from spending your quota with `/orcacode-review`.
 
 Show the user the final file before committing.
 
-### 4. Add the API key secret
+### 4. Have the user add the API key — with `gh`, themselves
 
 The secret must be named exactly `ORCAROUTER_API_KEY`.
 
-**Never ask the user to paste the key into the chat, and never read it from a file.**
-It would land in the transcript. Instead, tell them to run it themselves in this session:
+This is the one step you do **not** perform. Stop, hand the user this command,
+and wait for them to confirm they have run it:
 
 ```
 ! gh secret set ORCAROUTER_API_KEY --repo <owner/name>
 ```
 
-`gh` prompts for the value and it never reaches you. Without `gh`, send them to
-`https://github.com/<owner>/<name>/settings/secrets/actions/new`.
+`gh` prompts for the value on their terminal, so the key goes from their
+keyboard straight to GitHub. It never passes through you.
+
+**Never** ask them to paste the key into the chat, read it out of a file or an
+env var, or pass it on a command line. A pasted key is in the transcript
+forever; a key in `argv` is visible to every process on the machine via `ps`.
+There is no version of this you can do "carefully" — the only safe handling is
+not handling it.
 
 They can create or copy a key at <https://www.orcarouter.ai/console/token>.
 
-Then verify it exists without revealing it:
+Without `gh`, send them to
+`https://github.com/<owner>/<name>/settings/secrets/actions/new` and have them
+add it in the browser.
+
+Then confirm it exists without ever seeing its value:
 
 ```bash
 gh secret list --repo <owner/name> | grep ORCAROUTER_API_KEY
 ```
+
+If it is not there yet, do not continue to the test PR — the run will fail on
+auth and the failure will look like a configuration bug rather than a missing
+key. Wait, or skip to step 8 and list it as outstanding.
 
 ### 5. Enable the app
 
@@ -150,11 +164,24 @@ gh api -X PATCH repos/<owner>/<name>/branches/<default>/protection/required_stat
 
 Confirm before running — branch protection changes affect everyone on the repo.
 
-### 8. Report
+### 8. Report, and close on what they still owe
 
 Tell the user, concretely: the workflow path, the settings you chose, whether the
 secret and required check are in place, and the result of the test run. If any step
-was skipped (no `gh`, protection not applied), say which and what they still owe.
+was skipped (no `gh`, protection not applied), say which.
+
+**End the message with their outstanding actions as copy-pasteable commands** —
+not prose describing them. Anything you could not do yourself belongs here, and
+the API key is almost always on the list because you are not allowed to do it:
+
+```
+! gh secret set ORCAROUTER_API_KEY --repo <owner/name>
+```
+
+Re-check with `gh secret list` before claiming it is done. Do not report the
+install as complete while the secret is missing: the workflow is in place but
+every run will fail on auth, and "installed" would be a lie the user only finds
+out about on their next PR.
 
 ## Reconfigure
 

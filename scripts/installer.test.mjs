@@ -188,3 +188,28 @@ test("every npx invocation in the README names the real package", () => {
     assert.equal(name, PKG.name, `stale package name in README: npx ${name}`);
   }
 });
+
+// ------------------------------------------------------- skill safety rules ---
+
+const SKILL = fs.readFileSync(
+  new URL("../skills/setup-orca-code-review/SKILL.md", import.meta.url),
+  "utf8",
+);
+
+test("the skill tells the agent to hand the API key to gh, not handle it", () => {
+  // The one instruction that must never be softened. An agent that reads the
+  // key to be helpful puts it in the transcript, permanently.
+  assert.match(SKILL, /gh secret set ORCAROUTER_API_KEY/);
+  assert.match(SKILL, /[Nn]ever.{0,80}paste the key into the chat/s);
+  assert.match(SKILL, /\bps\b/, "the argv/ps rationale is missing — rules without reasons get edited away");
+});
+
+test("the skill closes by listing the key as an outstanding user action", () => {
+  const report = SKILL.slice(SKILL.indexOf("### 8."), SKILL.indexOf("## Reconfigure"));
+  assert.match(report, /gh secret set ORCAROUTER_API_KEY/, "the final step does not repeat the gh command");
+  assert.match(report, /copy-pasteable/i);
+});
+
+test("the skill refuses to call an install complete without the secret", () => {
+  assert.match(SKILL, /[Dd]o not report the\s+install as complete while the secret is missing/s);
+});

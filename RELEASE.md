@@ -104,6 +104,22 @@ Five gates run before the point of no return, and each one fails the job:
    own `node_modules/.bin` shim, asserting it prints the expected version and
    that `skill list` produces the catalog.
 
+And one gate *after* publishing, because that is the only place it can be
+checked:
+
+6. The new version is fetched from the registry **anonymously** and must return
+   200. `npm publish` exiting 0 does not mean anyone can install what it
+   shipped.
+
+Gate 6 exists because `@orcarouter/code-review@1.0.2` published green and was
+unreachable. Scoped packages default to **restricted**, and it landed that way
+despite both `--access public` and `publishConfig.access` — the log read
+`+ @orcarouter/code-review@1.0.2` while the registry 404'd and the package page
+403'd for everyone outside the org. The job now runs `npm access set
+status=public` (idempotent, soft-fail) and then proves the result with an
+unauthenticated fetch. The fetch is what decides: an authenticated read would
+succeed against a private package and prove nothing.
+
 Gate 5 exists because 1.0.0 shipped a CLI that did nothing. npm installs a `bin`
 as a **symlink**, so `argv[1]` is the link while `import.meta.url` is its
 target; the entry-point guard compared the two without `realpath` and was false

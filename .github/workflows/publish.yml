@@ -1,0 +1,155 @@
+# Publish `orcacode-review` to npm when its version is not on the registry yet.
+#
+# The trigger is every push to main, but the decision is "is this exact version
+# already published?" — not "did package.json change in this commit?". Diffing
+# against the previous commit looks equivalent and is not: a squash merge, a
+# force push, or a revert all make "the previous commit" the wrong thing to
+# compare against, and the failure is silent in both directions (a missed
+# publish, or a publish attempt that dies on E409). Asking the registry is one
+# HTTP call and has no such states.
+#
+# So: bump `version` in package.json when you want a release. Every other
+# commit no-ops with a green check.
+#
+# Publishing is irreversible in practice — npm's unpublish window is 72 hours
+# and a withdrawn version number can never be reused. Everything that can be
+# checked before the point of no return is checked below, and the job fails
+# closed if any of it is off.
+#
+# NOTE: this workflow deliberately creates no git tags. The npm package version
+# and the action's own `v1.x` release tags are SEPARATE version lines (the
+# action is on v1.4.x while the CLI starts at 1.0.0). Tagging `v1.0.0` here
+# would collide with the action's tag series and could move consumers'
+# `uses: ...@v1` onto the wrong commit. Action tags stay manual — see RELEASE.md.
+
+name: Publish
+
+concurrency:
+  group: publish-npm
+  cancel-in-progress: false # never abort a run that may be mid-publish
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # provenance attestation; not used for auth
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the v1 tag check below needs the tag objects
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      # ---- Is there anything to do? ------------------------------------
+      #
+      # `npm view <pkg>@<version>` prints the version when it exists, exits
+      # non-zero (E404) when the package or version does not. Both are normal
+      # answers here, so the failure is swallowed and only the output is read.
+      - id: check
+        name: Check whether this version is already published
+        run: |
+          set -uo pipefail
+          NAME=$(node -p "require('./package.json').name")
+          VERSION=$(node -p "require('./package.json').version")
+          echo "name=$NAME"       >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          PUBLISHED=$(npm view "$NAME@$VERSION" version 2>/dev/null || true)
+          if [ -n "$PUBLISHED" ]; then
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::$NAME@$VERSION is already on npm — nothing to publish."
+          else
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$NAME@$VERSION is not on npm — will publish."
+          fi
+
+      # ---- Everything below runs only for a real release ---------------
+
+      - name: Verify the three versions are in sync
+        if: steps.check.outputs.needed == 'true'
+        run: |
+          set -euo pipefail
+          PKG=$(node -p "require('./package.json').version")
+          PLUGIN=$(node -p "require('./.claude-plugin/plugin.json').version")
+          MARKET=$(node -p "require('./.claude-plugin/marketplace.json').metadata.version")
+          echo "package.json=$PKG  plugin.json=$PLUGIN  marketplace.json=$MARKET"
+          if [ "$PKG" != "$PLUGIN" ] || [ "$PKG" != "$MARKET" ]; then
+            echo "::error::Version mismatch. package.json, .claude-plugin/plugin.json and" \
+                 ".claude-plugin/marketplace.json must move together (see RELEASE.md)."
+            exit 1
+          fi
+
+      # The installers generate a workflow pinned to `@v1`. If that tag predates
+      # scripts/settings.mjs and scripts/report.mjs, every new user gets working
+      # reviews with a silently inert Settings tab and empty Analytics — no
+      # error, just two dead console tabs. Refuse to ship an installer into that.
+      - name: Verify the v1 tag can serve what the installer generates
+        if: steps.check.outputs.needed == 'true'
+        run: |
+          set -euo pipefail
+          if ! git rev-parse -q --verify refs/tags/v1 >/dev/null; then
+            echo "::error::No v1 tag. The generated workflow pins @v1 — see RELEASE.md."
+            exit 1
+          fi
+          for f in scripts/settings.mjs scripts/report.mjs; do
+            if ! git cat-file -e "v1:$f" 2>/dev/null; then
+              echo "::error::v1 is missing $f. Move the v1 tag before publishing (RELEASE.md)."
+              exit 1
+            fi
+          done
+          echo "v1 = $(git rev-parse --short v1), ships settings.mjs and report.mjs"
+
+      - name: Test
+        if: steps.check.outputs.needed == 'true'
+        run: node --test scripts/*.test.mjs
+
+      # A tarball that omits bin/ or skills/ still publishes cleanly and then
+      # fails on the user's first `npx`. Assert the payload before shipping it.
+      - name: Verify the tarball carries the CLI and the skill
+        if: steps.check.outputs.needed == 'true'
+        run: |
+          set -euo pipefail
+          npm pack --dry-run --json > /tmp/pack.json
+          node -e '
+            const files = require("/tmp/pack.json")[0].files.map(f => f.path);
+            const required = [
+              "bin/orcacode-review.mjs",
+              "bin/platforms.mjs",
+              "bin/i18n.mjs",
+              "skills/setup-orca-code-review/SKILL.md",
+            ];
+            const missing = required.filter(f => !files.includes(f));
+            if (missing.length) {
+              console.error("::error::tarball is missing: " + missing.join(", "));
+              process.exit(1);
+            }
+            console.log("tarball ok — " + files.length + " files");
+          '
+
+      - name: Publish
+        if: steps.check.outputs.needed == 'true'
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Summary
+        if: steps.check.outputs.needed == 'true'
+        run: |
+          {
+            echo "### Published \`${{ steps.check.outputs.name }}@${{ steps.check.outputs.version }}\`"
+            echo
+            echo '```'
+            echo "npx ${{ steps.check.outputs.name }}@${{ steps.check.outputs.version }} skill list"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

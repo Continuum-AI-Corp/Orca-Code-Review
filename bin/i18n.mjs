@@ -118,13 +118,13 @@ const EN = {
       "     only starts once this file is on your default branch.",
     step3: "  3. Make the gate real: Settings → Branches / Rulesets → Require status checks",
     step3Note: (check) => `     and add the ${check} check. A red check blocks nothing until it is required.`,
-    diagnoseHint: "  Diagnose anytime with: npx orcacode-review doctor",
+    diagnoseHint: "  Diagnose anytime with: npx @orcarouter/code-review doctor",
   },
 
   reconfigure: {
     title: "OrcaCode Review — reconfigure",
     missing: (p) => `No workflow at ${p}.`,
-    missingHint: "Run `npx orcacode-review init` first.",
+    missingHint: "Run `npx @orcarouter/code-review init` first.",
     dashboardOwns: "This install lets the OrcaRouter dashboard own most settings.",
     dashboardOwnsDetail: (url) =>
       "  Review mode, models, exhaustive mode, quiet mode, and the rubric are not in\n" +
@@ -143,7 +143,7 @@ const EN = {
     repoUnknown: "(unknown)",
     workflowExists: (p) => `${p} exists`,
     workflowMissing: (p) => `${p} is missing`,
-    workflowMissingFix: "Run: npx orcacode-review init",
+    workflowMissingFix: "Run: npx @orcarouter/code-review init",
     onBase: (b) => `Present on origin/${b}`,
     notOnBase: (b) => `Not on origin/${b} yet`,
     notOnBaseFix:
@@ -188,7 +188,7 @@ const EN = {
 
   skill: {
     missingBundle: "The bundled skill is missing from this package.",
-    missingBundleHint: "Reinstall with: npx orcacode-review@latest skill",
+    missingBundleHint: "Reinstall with: npx @orcarouter/code-review@latest skill",
     scopeQ: "Where should the skill be installed?",
     scopeProject: "This project",
     scopeProjectDetail: "Committed with the repo — everyone who clones it gets the skill.",
@@ -197,7 +197,7 @@ const EN = {
     unknownScope: (s) => `Unknown scope "${s}".`,
     unknownScopeHint: "Use --scope project or --scope global.",
     unknownPlatform: (id) => `Unknown platform "${id}".`,
-    unknownPlatformHint: "List them with: orcacode-review skill list",
+    unknownPlatformHint: "List them with: npx @orcarouter/code-review skill list",
     noneDetected: "No agent platform detected here, and none was named.",
     noneDetectedHint:
       "Pass one explicitly, e.g. --platform claude --platform codex (`skill list` shows all 36).",
@@ -211,7 +211,7 @@ const EN = {
     pluginHint: "  For Claude Code, the plugin keeps itself updated instead:",
     listTitle: (n) => `${n} supported platforms`,
     listColumns: "  (project root / global root)",
-    listLegend: "  ● = detected here.  Install with: orcacode-review skill install --platform <id>",
+    listLegend: "  ● = detected here.  Install with: npx @orcarouter/code-review skill install --platform <id>",
   },
 
   secret: {
@@ -337,13 +337,13 @@ const ZH = {
       "     默认分支，评审才会开始跑。",
     step3: "  3. 让门禁真正生效：Settings → Branches / Rulesets → Require status checks",
     step3Note: (check) => `     把 ${check} 检查设为必需。检查变红本身拦不住任何东西。`,
-    diagnoseHint: "  随时体检：npx orcacode-review doctor",
+    diagnoseHint: "  随时体检：npx @orcarouter/code-review doctor",
   },
 
   reconfigure: {
     title: "OrcaCode Review —— 修改配置",
     missing: (p) => `找不到 ${p}。`,
-    missingHint: "先运行 `npx orcacode-review init`。",
+    missingHint: "先运行 `npx @orcarouter/code-review init`。",
     dashboardOwns: "这个安装把大部分配置交给了 OrcaRouter 控制台。",
     dashboardOwnsDetail: (url) =>
       "  评审模式、模型、穷尽模式、静默模式和评分规则都不在这个文件里 ——\n" +
@@ -362,7 +362,7 @@ const ZH = {
     repoUnknown: "（未知）",
     workflowExists: (p) => `${p} 存在`,
     workflowMissing: (p) => `缺少 ${p}`,
-    workflowMissingFix: "运行：npx orcacode-review init",
+    workflowMissingFix: "运行：npx @orcarouter/code-review init",
     onBase: (b) => `已在 origin/${b} 上`,
     notOnBase: (b) => `还没进 origin/${b}`,
     notOnBaseFix: "pull_request_target 从「目标分支」读取 workflow。合并进去之后才会有运行记录。",
@@ -404,7 +404,7 @@ const ZH = {
 
   skill: {
     missingBundle: "这个包里缺少内置的 skill。",
-    missingBundleHint: "重新安装：npx orcacode-review@latest skill",
+    missingBundleHint: "重新安装：npx @orcarouter/code-review@latest skill",
     scopeQ: "skill 装到哪里？",
     scopeProject: "当前项目",
     scopeProjectDetail: "随仓库提交 —— 每个 clone 的人都能用。",
@@ -413,7 +413,7 @@ const ZH = {
     unknownScope: (s) => `未知的安装范围「${s}」。`,
     unknownScopeHint: "用 --scope project 或 --scope global。",
     unknownPlatform: (id) => `未知平台「${id}」。`,
-    unknownPlatformHint: "用 orcacode-review skill list 查看全部。",
+    unknownPlatformHint: "用 npx @orcarouter/code-review skill list 查看全部。",
     noneDetected: "这里没检测到任何 Agent 平台，也没有指定平台。",
     noneDetectedHint: "请显式指定，例如 --platform claude --platform codex（`skill list` 列出全部 36 个）。",
     platformQ: "要把 skill 装到哪些 Agent？",
@@ -426,7 +426,7 @@ const ZH = {
     pluginHint: "  Claude Code 建议改用插件，它会自动保持更新：",
     listTitle: (n) => `支持 ${n} 个平台`,
     listColumns: "  （项目路径 / 全局路径）",
-    listLegend: "  ● = 本机已检测到。安装：orcacode-review skill install --platform <id>",
+    listLegend: "  ● = 本机已检测到。安装：npx @orcarouter/code-review skill install --platform <id>",
   },
 
   secret: {

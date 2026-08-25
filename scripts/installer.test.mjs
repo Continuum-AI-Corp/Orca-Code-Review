@@ -1,4 +1,4 @@
-// Tests for the `npx orcacode-review` workflow renderer.
+// Tests for the `npx @orcarouter/code-review` workflow renderer.
 //
 // The renderer decides what a consumer's CI actually does, so the two
 // properties worth pinning are: (1) it only writes inputs that differ from
@@ -148,4 +148,43 @@ test("commented-out example inputs are not read as overrides", () => {
 test("a trailing comment on a real input does not leak into the value", () => {
   const text = '          block-on: "P0"  # severities that fail the check\n';
   assert.equal(parseOverrides(text)["block-on"], "P0");
+});
+
+// ------------------------------------------------------------ package identity ---
+
+const PKG = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+
+test("a scoped package declares public access", () => {
+  // Scoped packages default to RESTRICTED. Without publishConfig, a hand-run
+  // publish that forgets `--access public` ships it private, and the install
+  // command in the README 404s for everyone outside the org.
+  if (!PKG.name.startsWith("@")) return;
+  assert.equal(PKG.publishConfig?.access, "public");
+});
+
+test("the installed command is short even though the package name is scoped", () => {
+  // `npm i -g` creates a command named by the bin KEY, not the package name.
+  assert.deepEqual(Object.keys(PKG.bin), ["orcacode-review"]);
+});
+
+test("every npx invocation in the strings names the real package", () => {
+  // The failure this catches: renaming the package and leaving `npx <old-name>`
+  // in a hint, so the tool confidently tells people to run something that does
+  // not exist. Moving to the org scope touched thirteen such strings across
+  // two languages, and nothing but a grep would have caught a miss.
+  const i18n = fs.readFileSync(new URL("../bin/i18n.mjs", import.meta.url), "utf8");
+  const named = [...i18n.matchAll(/npx ([@\w./-]+)/g)].map((m) => m[1].replace(/@latest$/, ""));
+  assert.ok(named.length > 0, "no npx invocations found — did the hints move?");
+  for (const name of new Set(named)) {
+    assert.equal(name, PKG.name, `stale package name in a hint: npx ${name}`);
+  }
+});
+
+test("every npx invocation in the README names the real package", () => {
+  const readme = fs.readFileSync(new URL("../README.md", import.meta.url), "utf8");
+  const named = [...readme.matchAll(/npx ([@\w./-]+)/g)].map((m) => m[1].replace(/@latest$/, ""));
+  assert.ok(named.length > 0);
+  for (const name of new Set(named)) {
+    assert.equal(name, PKG.name, `stale package name in README: npx ${name}`);
+  }
 });

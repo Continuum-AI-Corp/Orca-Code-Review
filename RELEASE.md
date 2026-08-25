@@ -47,10 +47,37 @@ that pins `@v1`. **Release them only after the `v1` tag has been moved** — an
 installer that writes `@v1` against a stale tag hands every new user the dead
 Settings/Analytics tabs described above, on their very first run.
 
-### npm — `npx orcacode-review`
+### npm — `npx @orcarouter/code-review`
 
-Package name is `orcacode-review` (one word, matching the product name and the
-`/orcacode-review` PR command); the repo and action stay `orca-code-review`.
+Package name is **`@orcarouter/code-review`**, under the `orcarouter`
+organization scope. The **bin** it installs is still `orcacode-review` (one
+word, matching the product name and the `/orcacode-review` PR command), so a
+global install gives a short command while the package name carries the org:
+
+```
+npx @orcarouter/code-review          # the package name
+orcacode-review --version            # the command, after `npm i -g`
+```
+
+The repo and the action stay `orca-code-review`.
+
+`publishConfig.access` is `public` in `package.json`. Scoped packages default to
+**restricted**, so without it a hand-run `npm publish` that forgets
+`--access public` ships it private and the documented install command 404s for
+everyone outside the org.
+
+#### The unscoped `orcacode-review` name is retired
+
+1.0.0 and 1.0.1 were published unscoped under a personal account, before the
+move to the org. Neither is maintained, and 1.0.0 additionally does not run at
+all (see gate 5). Leave both on the registry — unpublishing burns those version
+numbers permanently — but mark the name dead:
+
+```
+npm deprecate orcacode-review "Moved to @orcarouter/code-review"
+```
+
+Never publish to the old name again.
 
 **Publishing is automatic.** To cut a release, bump `version` in `package.json`
 (and the two `.claude-plugin` files — see below) and merge to `main`. That is
@@ -102,7 +129,7 @@ manual, per the section above.
 Smoke-test after a release:
 
 ```
-npx orcacode-review@latest skill list
+npx @orcarouter/code-review@latest skill list
 ```
 
 `files` in `package.json` ships only `bin/` and `skills/` — the action itself is

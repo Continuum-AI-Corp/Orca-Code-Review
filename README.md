@@ -33,6 +33,72 @@ Every PR starts with a fast, low-cost model. Once clear of P0/P1 issues, OrcaCod
 
 ---
 
+## One-command install
+
+Either installer writes the workflow, guides you through the API key, and sets up the merge gate.
+
+**Terminal — no install required:**
+
+```bash
+npx orcacode-review
+```
+
+**Claude Code — as a plugin:**
+
+```text
+/plugin marketplace add Continuum-AI-Corp/orca-code-review
+/plugin install orca-code-review
+```
+
+Then ask: *"set up OrcaCode Review in this repo"*. The skill also handles reconfiguring, troubleshooting, and uninstalling.
+
+The CLI has the same lifecycle commands:
+
+```bash
+npx orcacode-review init          # write the workflow
+npx orcacode-review reconfigure   # change blocking rules, diff limits, where config lives
+npx orcacode-review doctor        # diagnose reviews that don't run or don't post
+npx orcacode-review uninstall     # remove it (drops the merge gate first)
+```
+
+Prefer to wire it by hand? The manual steps are below.
+
+### Use it from any agent
+
+The setup skill installs into **36 agent platforms** — the same catalog the [OrcaDub MCP server](https://github.com/Continuum-AI-Corp/orcadub-mcp-server) uses, so IDs and paths match across Orca products.
+
+```bash
+npx orcacode-review skill list      # all 36, with the ones detected here marked
+npx orcacode-review skill install   # pick from a checkbox list; detected agents pre-checked
+```
+
+Detected platforms are pre-selected. For unattended or agent-driven setup, name them:
+
+```bash
+npx orcacode-review skill install --platform claude --platform codex --scope project --yes
+npx orcacode-review skill install --platform cursor --scope global --yes
+```
+
+Claude Code, Cursor, Codex, OpenCode, Windsurf, Cline, RooCode, Continue, GitHub Copilot, Gemini CLI, Amazon Q Developer, Qwen Code, Kilo Code, Auggie, Kimi Code, Kiro, Lingma, Junie, CodeBuddy Code, CoStrict, Crush, Factory Droid, iFlow, Pi, Qoder, Antigravity, Antigravity 2.0, Bob Shell, ForgeCode, Trae, Trae CN, ZCode, MimoCode, Hermes, OpenClaw, Command Code.
+
+An existing identical skill is left unchanged; an existing **different** one is preserved unless you pass `--force`. Use `--json` for structured output and `NO_COLOR` for plain text.
+
+### Language
+
+The CLI speaks **English and Simplified Chinese**, picked from your locale (`LC_ALL` / `LC_MESSAGES` / `LANG`). Override it per run, or pin it for good:
+
+```bash
+npx orcacode-review --lang zh          # 中文界面
+npx orcacode-review --lang en          # English
+export ORCACODE_LANG=zh                # 固定下来
+```
+
+Guided flows open with a language screen when `--lang` is not given. Add `--no-banner` to skip the wordmark.
+
+Only prose is translated — flags, platform IDs, workflow inputs, and shell commands stay verbatim, because you still have to type them.
+
+---
+
 ## Quick Start
 
 ### 1. Enable OrcaCode Review

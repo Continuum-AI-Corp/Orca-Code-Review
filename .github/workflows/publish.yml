@@ -1,4 +1,4 @@
-# Publish `orcacode-review` to npm when its version is not on the registry yet.
+# Publish `@orcarouter/code-review` to npm when its version is not on the registry yet.
 #
 # The trigger is every push to main, but the decision is "is this exact version
 # already published?" — not "did package.json change in this commit?". Diffing

@@ -88,7 +88,7 @@ test("commands and flags survive translation", () => {
     "--force", "--platform", "--scope", "--yes", "--help", "--lang",
     "gh secret set", "gh auth login", "gh run view",
     "pull_request_target", "auto_review", "ready_for_review", "auto-review-authors",
-    "npx orcacode-review", "orcacode-review skill list", "/orcacode-review",
+    "npx @orcarouter/code-review", "@orcarouter/code-review skill list", "/orcacode-review",
   ];
   const present = candidates.filter((literal) => en.includes(literal));
   assert.ok(present.length >= 10, "the English table stopped mentioning the literals this test guards");

@@ -40,7 +40,7 @@ Either installer writes the workflow, guides you through the API key, and sets u
 **Terminal — no install required:**
 
 ```bash
-npx orcacode-review
+npx @orcarouter/code-review
 ```
 
 **Claude Code — as a plugin:**
@@ -55,10 +55,10 @@ Then ask: *"set up OrcaCode Review in this repo"*. The skill also handles reconf
 The CLI has the same lifecycle commands:
 
 ```bash
-npx orcacode-review init          # write the workflow
-npx orcacode-review reconfigure   # change blocking rules, diff limits, where config lives
-npx orcacode-review doctor        # diagnose reviews that don't run or don't post
-npx orcacode-review uninstall     # remove it (drops the merge gate first)
+npx @orcarouter/code-review init          # write the workflow
+npx @orcarouter/code-review reconfigure   # change blocking rules, diff limits, where config lives
+npx @orcarouter/code-review doctor        # diagnose reviews that don't run or don't post
+npx @orcarouter/code-review uninstall     # remove it (drops the merge gate first)
 ```
 
 Prefer to wire it by hand? The manual steps are below.
@@ -68,15 +68,15 @@ Prefer to wire it by hand? The manual steps are below.
 The setup skill installs into **36 agent platforms** — the same catalog the [OrcaDub MCP server](https://github.com/Continuum-AI-Corp/orcadub-mcp-server) uses, so IDs and paths match across Orca products.
 
 ```bash
-npx orcacode-review skill list      # all 36, with the ones detected here marked
-npx orcacode-review skill install   # pick from a checkbox list; detected agents pre-checked
+npx @orcarouter/code-review skill list      # all 36, with the ones detected here marked
+npx @orcarouter/code-review skill install   # pick from a checkbox list; detected agents pre-checked
 ```
 
 Detected platforms are pre-selected. For unattended or agent-driven setup, name them:
 
 ```bash
-npx orcacode-review skill install --platform claude --platform codex --scope project --yes
-npx orcacode-review skill install --platform cursor --scope global --yes
+npx @orcarouter/code-review skill install --platform claude --platform codex --scope project --yes
+npx @orcarouter/code-review skill install --platform cursor --scope global --yes
 ```
 
 Claude Code, Cursor, Codex, OpenCode, Windsurf, Cline, RooCode, Continue, GitHub Copilot, Gemini CLI, Amazon Q Developer, Qwen Code, Kilo Code, Auggie, Kimi Code, Kiro, Lingma, Junie, CodeBuddy Code, CoStrict, Crush, Factory Droid, iFlow, Pi, Qoder, Antigravity, Antigravity 2.0, Bob Shell, ForgeCode, Trae, Trae CN, ZCode, MimoCode, Hermes, OpenClaw, Command Code.
@@ -88,8 +88,8 @@ An existing identical skill is left unchanged; an existing **different** one is 
 The CLI speaks **English and Simplified Chinese**, picked from your locale (`LC_ALL` / `LC_MESSAGES` / `LANG`). Override it per run, or pin it for good:
 
 ```bash
-npx orcacode-review --lang zh          # 中文界面
-npx orcacode-review --lang en          # English
+npx @orcarouter/code-review --lang zh          # 中文界面
+npx @orcarouter/code-review --lang en          # English
 export ORCACODE_LANG=zh                # 固定下来
 ```
 

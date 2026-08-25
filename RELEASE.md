@@ -108,8 +108,13 @@ And one gate *after* publishing, because that is the only place it can be
 checked:
 
 6. The new version is fetched from the registry **anonymously** and must return
-   200. `npm publish` exiting 0 does not mean anyone can install what it
-   shipped.
+   200, retried for three minutes. `npm publish` exiting 0 does not mean anyone
+   can install what it shipped.
+
+   The window is that long because a restricted package and one that simply has
+   not reached the CDN edge yet both answer 404 — the status code cannot tell
+   them apart, so only waiting can. A red gate 6 therefore means *check the URL
+   by hand* before assuming the package is private.
 
 Gate 6 exists because `@orcarouter/code-review@1.0.2` published green and was
 unreachable. Scoped packages default to **restricted**, and it landed that way

@@ -203,17 +203,23 @@ jobs:
           # No auth header here on purpose — an authenticated read would succeed
           # against a private package and prove nothing.
           URL="https://registry.npmjs.org/$(node -pe 'encodeURIComponent(process.argv[1])' "$NAME")/$VERSION"
-          for attempt in 1 2 3 4 5 6; do
+          # Three minutes. A brand-new version document takes a while to reach
+          # the public CDN edge — 1.1.0 needed longer than the first sixty
+          # seconds this waited, and failed a build that had shipped correctly.
+          # A restricted package and an unpropagated one both answer 404, so
+          # the status code cannot shorten this; only time can.
+          for attempt in $(seq 1 15); do
             CODE=$(curl -sS -o /dev/null -w '%{http_code}' "$URL" || echo 000)
-            echo "attempt $attempt: HTTP $CODE"
+            echo "attempt $attempt/15: HTTP $CODE"
             if [ "$CODE" = "200" ]; then
               echo "$NAME@$VERSION is publicly installable"
               exit 0
             fi
-            sleep 10
+            sleep 12
           done
-          echo "::error::$NAME@$VERSION published but is not anonymously readable (HTTP $CODE)."
-          echo "::error::Scoped packages default to restricted. Fix with: npm access set status=public $NAME"
+          echo "::error::$NAME@$VERSION published but is still not anonymously readable after 3 minutes (HTTP $CODE)."
+          echo "::error::Either it is restricted — fix with: npm access set status=public $NAME"
+          echo "::error::or the CDN is unusually slow. Check $URL by hand before assuming the former."
           exit 1
 
       - name: Summary

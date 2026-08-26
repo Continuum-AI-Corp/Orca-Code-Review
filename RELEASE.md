@@ -66,28 +66,35 @@ The repo and the action stay `orca-code-review`.
 `--access public` ships it private and the documented install command 404s for
 everyone outside the org.
 
-#### The `1.x` line was withdrawn; `2.0.0` is the floor
+#### The `1.x` line is retired; `2.0.0` is the supported floor
 
-`@orcarouter/code-review` starts at **2.0.0** on the registry. 1.0.2 through
-1.5.0 were published on 25–26 Aug 2026 and unpublished inside npm's 72-hour
-window, so the packument shows one version and its history looks truncated —
-it is not. What went with them:
+1.0.2 through 1.5.0 were published on 25–26 Aug 2026 and are all **deprecated**:
+still installable, and every install of one prints
+
+```
+npm warn deprecated @orcarouter/code-review@1.x.y: No longer supported —
+install @orcarouter/code-review@latest
+```
+
+Deprecated rather than unpublished, and not by preference — see "Unpublishing
+cannot be automated" below. Two things left with that line:
 
 - **App mode.** Up to 1.4.0 the skill offered a GitHub App install as an
   alternative to the Action. Installing an App is a permission grant only a
-  human can approve on a web page, so the agent could only hand over a link;
-  1.5.0 dropped it and 2.0.0 is the first version published without it. The
-  major marks that break rather than leaving it in a minor nobody can install.
+  human can approve on a web page, so the agent could only hand over a link and
+  wait; 1.5.0 dropped it. 2.0.0 is the first version published without it, and
+  the major is where that break belongs.
 - **The self-dependency.** 1.1.0 through 1.5.0 declared
-  `@orcarouter/code-review: ^1.0.2` as a dependency *of itself*, so every
-  `npx` pulled a second, older copy of the CLI. Removed in 2.0.0 and pinned by
-  a test — see "the CLI ships with no dependencies" in
-  `scripts/installer.test.mjs`.
+  `@orcarouter/code-review: ^1.0.2` as a dependency *of itself*, so every `npx`
+  fetched a second, older copy of the CLI before running the one it was asked
+  for. Removed in 2.0.0 and pinned by a test — see "the CLI ships with no
+  dependencies" in `scripts/installer.test.mjs`.
 
-Unpublishing was the right call only because the line was two days old with no
-known consumers. It is not the default: outside the 72-hour window npm refuses,
-a withdrawn number can never be reused, and anyone pinned to it breaks with an
-E404 rather than a warning. **Deprecate instead** — see below.
+Deprecation is the right instrument for this anyway. It reaches exactly the
+people who need telling — anyone who installs one — without breaking anyone
+pinned, which an unpublish does with an E404 and no explanation. Run it with the
+**Deprecate** workflow (`workflow_dispatch`: versions, plus a message; an empty
+message clears the flag).
 
 #### The unscoped `orcacode-review` name is retired
 
@@ -100,7 +107,15 @@ numbers permanently — but mark the name dead:
 npm deprecate orcacode-review "Moved to @orcarouter/code-review"
 ```
 
-Never publish to the old name again.
+**Still outstanding** as of 2.0.0 — both versions are live and unmarked. The
+**Deprecate** workflow cannot do it: `NPM_TOKEN` is scoped to
+`@orcarouter/code-review` alone, which is the property that makes a leak
+survivable. This one runs from the personal account that owns the name.
+
+Never publish to the old name again, and do not unpublish these two: emptying
+the package frees `orcacode-review` for anyone to claim 24 hours later, and the
+docs used to tell people to `npx` it. A dead name we still hold beats a live one
+someone else fills.
 
 **Publishing is automatic.** To cut a release, bump `version` in `package.json`
 (and the two `.claude-plugin` files — see below) and merge to `main`. That is

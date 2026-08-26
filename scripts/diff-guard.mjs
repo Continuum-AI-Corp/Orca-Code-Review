@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Oversized-diff guard for the OrcaCode Review cascade.
+// Oversized-diff guard for the OrcaCode Review action.
 //
 // Reviewing a huge diff is noise: the model truncates context, files get
 // skipped, and the severity signal collapses — better to skip loudly and let

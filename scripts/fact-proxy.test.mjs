@@ -1,5 +1,5 @@
 // Contract tests for fact-proxy.mjs — the in-job loopback proxy that stamps
-// cascade facts onto OCR's requests and forwards them to the OrcaRouter
+// routing facts onto OCR's requests and forwards them to the OrcaRouter
 // gateway.
 //
 // Retry contract (A3): 429/502/503/504 is retried up to 3 more attempts with
@@ -1047,11 +1047,26 @@ describe("rate limiting (CR_MAX_RPM)", () => {
 describe("action.yml wiring (guardrail / firewall block comment)", () => {
   const actionYml = () => readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "action.yml"), "utf8");
 
+  // sliceStep, because the previous version passed `yml.indexOf(<a step that has
+  // since been deleted>)` as the end bound. indexOf returns -1, slice(start, -1)
+  // runs to the end of the file, and the three assertions below then matched
+  // anything anywhere after the step — they would have kept passing with the
+  // marker gone. A boundary that no longer exists has to fail loudly rather than
+  // widen silently.
+  const sliceStep = (yml, from, to) => {
+    const a = yml.indexOf(from);
+    const b = yml.indexOf(to);
+    assert.ok(a >= 0, `step not found: ${from}`);
+    assert.ok(b > a, `boundary step not found after ${from}: ${to}`);
+    return yml.slice(a, b);
+  };
+
   test("the block comment is upserted by its own marker (not a new comment on every push)", () => {
     const yml = actionYml();
-    const step = yml.slice(
-      yml.indexOf("- name: Surface guardrail / firewall block"),
-      yml.indexOf("- name: Promote tier"),
+    const step = sliceStep(
+      yml,
+      "- name: Surface guardrail / firewall block",
+      "- name: report_on severity filter",
     );
     assert.match(step, /<!-- orca-code-review-block -->/, "the block comment needs an upsert marker");
     assert.match(step, /listComments/, "it must look for an existing block comment");
@@ -1060,7 +1075,7 @@ describe("action.yml wiring (guardrail / firewall block comment)", () => {
 
   test("a resumed clean review retires the stale block comment", () => {
     const yml = actionYml();
-    const summary = yml.slice(yml.indexOf("- name: Summary (PR description)"), yml.indexOf("- name: Enforce severity gate"));
+    const summary = sliceStep(yml, "- name: Summary (PR description)", "- name: Enforce severity gate");
     assert.match(summary, /orca-code-review-block/, "the summary step must delete a stale block comment once reviews resume");
   });
 });

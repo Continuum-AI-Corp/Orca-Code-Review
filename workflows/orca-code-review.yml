@@ -4,9 +4,8 @@
 # `ORCAROUTER_API_KEY`. The review logic lives in the published action, so you
 # never copy scripts or config — just bump the version tag to update.
 #
-# Cost-tiered cascade: the cheap model reviews every push and the strong model
-# is withheld while any P0/P1 remains (fix those first). Only once the cheap tier
-# is clear does the strong model run the final pass. A severity gate can fail the
+# One review per push: findings post as inline PR comments, and a severity gate
+# can fail the
 # check to block the merge — mark it "required" in branch protection.
 
 name: OrcaCode Review
@@ -17,7 +16,6 @@ concurrency:
 
 on:
   # `synchronize` re-reviews on every new push — the per-commit review loop. The
-  # cascade escalates to the strong tier within a single run (no label-triggered
   # re-run needed — and a GITHUB_TOKEN label change can't trigger one anyway).
   # `ready_for_review` makes the dashboard's trigger=ready_for_review mode fire
   # when a draft PR becomes ready (drafts are skipped in that mode).
@@ -29,7 +27,7 @@ on:
 permissions:
   contents: read
   pull-requests: write
-  issues: write # label-based tier state + clean/fallback PR comments
+  issues: write # clean/fallback PR comments
 
 jobs:
   review:
@@ -59,8 +57,8 @@ jobs:
           # All optional — uncomment to override the defaults:
           # orcarouter-url: ${{ secrets.ORCAROUTER_URL }}
           # brand: "OrcaCode Review"
-          # router: "orcarouter/code-review"  # router whose DSL picks the model per tier
-          # fix-first: "P0,P1"   # withhold the strong tier until these are fixed
+          # router: "orcarouter/code-review"  # router whose DSL picks the model
+          # fix-first: "P0,P1"   # ask for a concrete fix on these first
           # block-on: "P0"       # fail the check (block merge) on these
           # max-diff-kb: "512"   # bigger diffs skip the review (outcome: on-oversized-diff)
           # max-diff-files: "300"  # same skip when the diff touches more files than this

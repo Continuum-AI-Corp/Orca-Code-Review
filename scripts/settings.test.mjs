@@ -45,6 +45,10 @@ const DEFAULTS = {
   quiet: false,
   fix_first: "P0,P1",
   block_on: "P0,P1",
+  // Fail-open, NOT the product default: this is what the action falls back to
+  // when the dashboard is unreachable, and an outage must never silently
+  // withhold findings. The configured default is narrower and lives server-side.
+  report_on: "P0,P1,P2,P3",
   rubric: "",
 };
 
@@ -104,6 +108,7 @@ describe("settings: happy fetch", () => {
       quiet: true,
       fix_first: "P0",
       block_on: "P0,P1,P2",
+      report_on: "P0,P1",
       rubric: "Custom rubric: tag every comment [P0]/[P1]/[P2].",
     };
     const gw = await startGateway([{ status: 200, body: envelope(data) }]);
@@ -226,6 +231,7 @@ describe("settings: field-wise fallback on invalid values", () => {
           quiet: "yes", // not a bool -> default
           fix_first: "P0,P9", // P9 is not a severity -> default
           block_on: 42, // not a string -> default
+          report_on: "P1,nope", // not all severities -> default
           rubric: 123, // not a string -> default
         }),
       },
@@ -241,6 +247,7 @@ describe("settings: field-wise fallback on invalid values", () => {
         quiet: false,
         fix_first: "P0,P1",
         block_on: "P0,P1",
+        report_on: "P0,P1,P2,P3",
         rubric: "",
       });
       assert.match(r.stderr, /trigger/, "field fallbacks must be noted on stderr");
@@ -377,30 +384,45 @@ describe("action.yml wiring (settings, quiet mode)", () => {
     );
   });
 
-  test("only the POST step reads the quiet-filtered result; gate + BOTH report steps keep the true counts", () => {
+  // sliceStep instead of a bare indexOf pair: a boundary step that has been
+  // renamed or removed makes indexOf return -1, slice(start, -1) run to the end
+  // of the file, and every assertion below match against most of action.yml —
+  // passing for the wrong reason. This suite lost two boundary steps when the
+  // cascade went, so the failure mode is not hypothetical.
+  const sliceStep = (yml, from, to) => {
+    const a = yml.indexOf(from);
+    const b = yml.indexOf(to);
+    assert.ok(a >= 0, `step not found: ${from}`);
+    assert.ok(b > a, `boundary step not found after ${from}: ${to}`);
+    return yml.slice(a, b);
+  };
+
+  test("only the POST step reads the display-filtered result; the gate and the report keep the true counts", () => {
     const yml = actionYml();
-    const post = yml.slice(yml.indexOf("- name: Post review comments"), yml.indexOf("- name: Summary (PR description)"));
-    assert.match(post, /result-posted\.json/, "posting must read the quiet-filtered file");
-    const gate = yml.slice(yml.indexOf("- name: Enforce severity gate"), yml.indexOf("- name: Report run (cheap tier)"));
+    const post = sliceStep(yml, "- name: Post review comments", "- name: Summary (PR description)");
+    assert.match(post, /result-posted\.json/, "posting must read the display-filtered file");
+
+    // The DISPLAY CHAIN is report_on then quiet, and only the posting step reads
+    // its output. Everything that enforces or measures reads the raw result.
+    const reportOn = sliceStep(yml, "- name: report_on severity filter", "- name: Quiet mode filter");
+    assert.match(reportOn, /\/result\.json/, "the report_on filter must read the unfiltered result");
+    const quiet = sliceStep(yml, "- name: Quiet mode filter", "- name: Post review comments");
+    assert.match(quiet, /result-reported\.json/, "quiet must read the report_on-filtered copy, not the raw one");
+
+    const gate = sliceStep(yml, "- name: Enforce severity gate", "- name: Report run");
     assert.match(gate, /\/result\.json/, "the gate must read the unfiltered result");
     assert.doesNotMatch(gate, /result-posted\.json/, "the gate must NOT read the filtered result");
-    // The per-tier report steps read the UNFILTERED tier snapshots (RESULT_CHEAP
-    // / RESULT_STRONG), never the quiet-filtered posted copy — quiet mutes the
-    // timeline, never enforcement or reporting.
-    const cheapReport = yml.slice(yml.indexOf("- name: Report run (cheap tier)"), yml.indexOf("- name: Report run (strong tier)"));
-    assert.match(cheapReport, /result-cheap\.json/, "the cheap report must read the unfiltered cheap snapshot");
-    assert.doesNotMatch(cheapReport, /result-posted\.json/, "the cheap report must NOT read the filtered result");
-    const strongReport = yml.slice(yml.indexOf("- name: Report run (strong tier)"), yml.indexOf("- name: Clean up engine output"));
-    assert.match(strongReport, /result-strong\.json/, "the strong report must read the unfiltered strong snapshot");
-    assert.doesNotMatch(strongReport, /result-posted\.json/, "the strong report must NOT read the filtered result");
+
+    const report = sliceStep(yml, "- name: Report run", "- name: Clean up engine output");
+    assert.match(report, /result-final\.json/, "the report must read the unfiltered snapshot");
+    assert.doesNotMatch(report, /result-posted\.json/, "the report must NOT read the filtered result");
   });
 
-  test("the settings + both report steps take the API key from ORCAROUTER_API_KEY env and pass NO --key flag (argv-leak guard)", () => {
+  test("the settings + report steps take the API key from ORCAROUTER_API_KEY env and pass NO --key flag (argv-leak guard)", () => {
     const yml = actionYml();
     const blocks = {
-      "Fetch review settings": yml.slice(yml.indexOf("- name: Fetch review settings"), yml.indexOf("- name: Skip review (settings)")),
-      "Report run (cheap tier)": yml.slice(yml.indexOf("- name: Report run (cheap tier)"), yml.indexOf("- name: Report run (strong tier)")),
-      "Report run (strong tier)": yml.slice(yml.indexOf("- name: Report run (strong tier)"), yml.indexOf("- name: Clean up engine output")),
+      "Fetch review settings": sliceStep(yml, "- name: Fetch review settings", "- name: Skip review (settings)"),
+      "Report run": sliceStep(yml, "- name: Report run", "- name: Clean up engine output"),
     };
     for (const [name, block] of Object.entries(blocks)) {
       assert.match(block, /ORCAROUTER_API_KEY:/, `${name} must inject the key via ORCAROUTER_API_KEY env`);
@@ -408,17 +430,19 @@ describe("action.yml wiring (settings, quiet mode)", () => {
     }
   });
 
-  test("the summary step passes --held + --fix-first in the held branch so the ❌ count follows fix-first", () => {
+  test("the summary step has no held branch: the ❌ count follows block-on, never fix-first", () => {
+    // There is one review per push, so there is no run whose ❌ count should
+    // follow fix_first instead of block_on. If a --held branch comes back, the
+    // summary and the gate can disagree about what blocks the PR.
     const yml = actionYml();
-    const summary = yml.slice(yml.indexOf("- name: Summary (PR description)"), yml.indexOf("- name: Enforce severity gate"));
-    assert.match(summary, /FIX_FIRST: \$\{\{ steps\.settings\.outputs\.fix_first \}\}/, "the fix-first set must reach the summary step");
-    assert.match(summary, /HELD === 'true'/, "the held branch must be keyed off the cascade's held output");
-    assert.match(summary, /'--held', '--fix-first'/, "held runs must pass --held --fix-first to summary-comment.mjs");
+    const summary = sliceStep(yml, "- name: Summary (PR description)", "- name: Enforce severity gate");
+    assert.doesNotMatch(summary, /--held/, "the summary must not pass --held");
+    assert.doesNotMatch(summary, /HELD/, "there is no held state to branch on");
   });
 
   test("the summary step passes the EFFECTIVE block-on set to summary-comment.mjs", () => {
     const yml = actionYml();
-    const summary = yml.slice(yml.indexOf("- name: Summary (PR description)"), yml.indexOf("- name: Enforce severity gate"));
+    const summary = sliceStep(yml, "- name: Summary (PR description)", "- name: Enforce severity gate");
     assert.match(summary, /--block-on/, "the ❌ count must follow the configured block-on set, not a hardcoded P0+P1");
     assert.match(summary, /steps\.settings\.outputs\.block_on/, "and it must be the settings-aware effective value");
   });

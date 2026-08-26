@@ -9,24 +9,23 @@ Automatically review every pull request, post findings directly on the affected 
 ## How it works
 
 ```text
-PR → Fast Review → Strong Review → Merge Gate
-        │               │
-     P0/P1?           P0/P1?
-        ↓               ↓
-      BLOCK           BLOCK
+PR → Review → Merge Gate
+        │
+     P0/P1?
+        ↓
+      BLOCK
 ```
 
-Every PR starts with a fast, low-cost model. Once clear of P0/P1 issues, OrcaCode automatically escalates to a stronger model for the final review.
+Every push gets one review. Findings post on the affected lines, and P0/P1 blocks the merge.
 
-**You choose the models in OrcaRouter. OrcaCode handles the review.**
+**You choose the model in OrcaRouter. OrcaCode handles the review.**
 
 ### What you get
 
 * 🔍 Automatic review on every PR
 * 💬 Inline P0 / P1 / P2 findings
 * 🛑 Merge gate for serious issues
-* ⚡ Fast → strong model cascade
-* 🧠 Choose your own review models
+* 🧠 Choose your own review model
 * 🎯 Precision filtering to reduce false positives
 * 🔒 OrcaRouter guardrails + security policies
 * 🔄 Re-run anytime with `/orcacode-review`
@@ -163,10 +162,10 @@ Customize the rubric and blocking policy from **OrcaRouter → Apps → OrcaCode
 
 Manage OrcaCode from **OrcaRouter → Apps → OrcaCode Review**:
 
-* **Models** — choose your fast + strong reviewers
+* **Model** — choose your reviewer
 * **Review mode** — every push, ready for review, or on demand
 * **Merge policy** — choose which severities block
-* **Exhaustive review** — run additional strong-model passes
+* **Exhaustive review** — run additional passes over the same diff
 * **Quiet mode** — keep P2 findings in the summary
 * **Custom rubric** — define your own review rules
 * **Guardrails** — add security and policy checks

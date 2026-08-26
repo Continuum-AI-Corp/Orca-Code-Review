@@ -2,7 +2,7 @@
 // Best-effort run report to the OrcaRouter control plane.
 //
 //   node report.mjs <result.json> --repo <owner/name> --pr <n> --sha <sha>
-//     --tier cheap|strong --gate pass|blocked --url <orcarouter-url>
+//     --tier standard --gate pass|blocked --url <orcarouter-url>
 //     [--engine-version <v>]
 //   (the API key comes from ORCAROUTER_API_KEY in the env, never a flag)
 //
@@ -47,7 +47,7 @@ async function main() {
   if (!file || !opts.repo || !opts.pr || !opts.sha || !opts.tier || !opts.gate || !opts.url || !opts.key) {
     console.error(
       "report: usage: ORCAROUTER_API_KEY=<key> node report.mjs <result.json> --repo X --pr N --sha S " +
-        "--tier cheap|strong --gate pass|blocked --url U [--engine-version V] " +
+        "--tier standard --gate pass|blocked --url U [--engine-version V] " +
         "(best-effort — exiting 0)",
     );
     return;

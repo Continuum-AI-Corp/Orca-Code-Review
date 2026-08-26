@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Availability check for the OrcaCode Review cascade.
+// Availability check for the OrcaCode Review action.
 //
 //   node check-result.mjs <result.json> <exit-code>
 //     exit 0 -> the engine produced a complete, usable review

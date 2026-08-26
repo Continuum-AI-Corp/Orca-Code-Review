@@ -1,0 +1,54 @@
+# OrcaCode Review — model-selection policy (the real recipe).
+#
+# Paste this into the per-workspace router `orcarouter/orcacode-review`
+# (Dashboard → Routers → orcacode-review → DSL). The Action never names a model; it
+# only injects raw facts as headers and this recipe decides which model runs.
+#
+# THE ROUTER WAS RENAMED. It used to be `code-review`; setup renames an existing one
+# and provisions new workspaces under the new name. The error names the alias that was
+# REQUESTED, not the one the workspace holds, so the two failures mean opposite things:
+#
+#   model router 'orcacode-review' not found
+#     The caller asked for the new name and this workspace is still on the old one.
+#     Run setup, which renames it.
+#
+#   model router 'code-review' not found
+#     Something is still explicitly asking for the OLD name after the rename — a
+#     `router:` input in the workflow, or a recipe pasted into a router of that name.
+#     Setup will not help; drop the override.
+#
+# MIGRATION — this recipe lives in YOUR OrcaRouter workspace, not in the Action, so
+# bumping the Action version does NOT update it. An install still running an older
+# recipe (e.g. `promoted` -> z-ai/glm-5.1) keeps routing that model until you
+# re-paste the block below.
+#
+# Facts injected by the Action on every request (via the in-job proxy shim):
+#   x-cr-prev-tier : standard        (the tier recorded for this run)
+#   x-cr-prev-p0p1 : true | false    (did the previous pass find a P0/P1)
+#
+# x-cr-prev-tier has ONE value now. It used to be none | cheap | strong, back
+# when a cheap pass could escalate to a strong one; a rule you wrote against
+# `cheap` or `strong` will never match again and will fall through to the
+# default. It is still sent because it still says what the run was recorded as.
+#
+# ONE DEFAULT, because one model reviews every run. Add rules above it when you
+# want more than that — the facts to branch on are already arriving.
+#
+# Nothing reads them today. They are sent anyway so that a policy which wants
+# them — routing small diffs to a cheaper model, say, decided up front and still
+# one pass — is an edit to this file in your own workspace rather than a wait for
+# an Action release.
+#
+# THE MODEL IS FREELY CHOOSABLE, and this is the line to edit. Swap in anything your
+# OrcaRouter workspace can reach (openai/gpt-5.5, anthropic/claude-opus-4-8,
+# z-ai/glm-5.1, deepseek/deepseek-v4-pro).
+#
+# deepseek-v4-flash below is what setup provisions, so this file and a freshly
+# created router agree. A stronger model here costs more per review and is the single
+# highest-leverage change you can make to review quality — nothing else in this
+# recipe affects what the reviewer can see or say.
+
+version: 1
+
+default:
+  model: "deepseek/deepseek-v4-flash"

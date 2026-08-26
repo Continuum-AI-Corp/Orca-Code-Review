@@ -160,7 +160,7 @@ describe("retry / backoff", () => {
       sleep: sleep.fn,
     });
     try {
-      const payload = JSON.stringify({ model: "orcarouter/code-review", messages: [{ role: "user", content: "hi" }] });
+      const payload = JSON.stringify({ model: "orcarouter/orcacode-review", messages: [{ role: "user", content: "hi" }] });
       const res = await request(proxy.port, { body: payload });
       assert.equal(res.status, 200);
       assert.equal(res.body, '{"ok":true}');
@@ -581,7 +581,7 @@ describe("usage metering (CR_USAGE_FILE)", () => {
     });
     try {
       // The request names the ALIAS; the meter must record what came back.
-      const res = await request(proxy.port, { body: '{"model":"orcarouter/code-review"}' });
+      const res = await request(proxy.port, { body: '{"model":"orcarouter/orcacode-review"}' });
       assert.equal(res.status, 200);
       assert.equal(res.body, bodyWithUsage(), "the relayed body must be byte-identical — the tap only observes");
 

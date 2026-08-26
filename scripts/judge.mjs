@@ -6,7 +6,11 @@
 // correct, high-value defect in THIS change, (3) recommends keep/drop. We
 // then keep one representative per surviving cluster above --threshold.
 //
-//   node judge.mjs <filtered.json> [--out f] [--threshold 0.7] [--model deepseek/deepseek-v4-pro]
+//   node judge.mjs <filtered.json> [--out f] [--threshold 0.7] [--model orcarouter/<router>]
+//
+// --model takes either a router ALIAS (the normal case — the workspace's recipe
+// then picks the model, keyed on the `x-cr-lens: judge` header this sends) or a
+// concrete model name, which pins it regardless of the recipe.
 //
 // LLM connection resolution:
 //   1. OCR_LLM_URL / OCR_LLM_TOKEN / OCR_LLM_AUTH_HEADER env vars (production
@@ -117,7 +121,23 @@ const body = JSON.stringify({
 
 const res = await fetch(llmUrl, {
   method: "POST",
-  headers: { "content-type": "application/json", [llmAuthHeader]: "Bearer " + llmToken },
+  headers: {
+    "content-type": "application/json",
+    [llmAuthHeader]: "Bearer " + llmToken,
+    // THE ANGLE, so a router recipe can put this call on its own model.
+    //
+    // --model is normally the router ALIAS (action.yml passes it when judge-model
+    // is unset), and an alias resolves through the workspace's DSL, which has no
+    // other way to tell a judge call from a review call: the reviewer stamps no
+    // angle. Without this header the judge takes the recipe's default — the
+    // reviewer's own model — and a judge scoring work its own model produced
+    // agrees with it, so the pass goes inert while still reporting success.
+    //
+    // Harmless when --model names a concrete model: nothing resolves an alias, so
+    // nothing reads the header. Sent unconditionally rather than only for aliases
+    // because "is this an alias" is the gateway's judgement, not this script's.
+    "x-cr-lens": "judge",
+  },
   body,
 });
 const raw = await res.text();

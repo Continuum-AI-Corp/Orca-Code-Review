@@ -157,7 +157,7 @@ inputs:
       model so the judge acts as an independent second opinion. Ignored when
       `precision-filter` is `"false"`.
     required: false
-    default: "deepseek/deepseek-v4-pro"
+    default: ""
   judge-threshold:
     description: >-
       Keep-threshold for the L2 judge's per-cluster confidence score (0–1).
@@ -286,8 +286,19 @@ runs:
         #
         # Checked once here rather than inside react(), so a token that cannot be
         # identified costs one API call, not two.
-        ME_TYPE=$(gh api user --jq .type 2>/dev/null || echo "Bot")
-        if [ "$ME_TYPE" != "Bot" ]; then
+        # ONLY AN EXPLICIT "User" DECLINES. `gh api user` needs a user-scoped
+        # token, and github-token defaults to ${{ github.token }} — an
+        # installation token, for which that endpoint returns no user. The old
+        # `|| echo "Bot"` fallback was meant to cover that and did not: the call
+        # can exit 0 with no `.type`, so ME_TYPE came back empty, `!= "Bot"` held,
+        # and the reaction was skipped for EVERY consumer on the default token —
+        # the case this exists to serve. Measured on a real run: "belongs to a
+        # user, not an app" while the reaction author was github-actions[bot].
+        #
+        # Inverted to fail towards acting: a PAT identifies itself as type User,
+        # and anything else — 403, empty, Bot — reacts.
+        ME_TYPE=$(gh api user --jq .type 2>/dev/null) || ME_TYPE=""
+        if [ "$ME_TYPE" = "User" ]; then
           echo "github-token belongs to a user, not an app; not reacting"
           exit 0
         fi
@@ -921,11 +932,25 @@ runs:
             POLICY_BLOCK_SNAPSHOT="${POLICY_BLOCK}.pre-l2"
             rm -f "$POLICY_BLOCK_SNAPSHOT"
             if [ -f "$POLICY_BLOCK" ]; then cp -f "$POLICY_BLOCK" "$POLICY_BLOCK_SNAPSHOT"; fi
-            if node "$JUDGE" "$1" --model "$JUDGE_MODEL" --threshold "$JUDGE_THRESHOLD" --out "$L2_OUT" 2>&1 \
+            # THE ROUTER DECIDES, unless judge-model overrides it. Its default is now
+            # empty, which sends this router's ALIAS instead of a model name; judge.mjs
+            # stamps x-cr-lens: judge, so the recipe's judge rule picks the model.
+            #
+            # Same model as before — the shipped recipe routes that rule to
+            # deepseek-v4-pro, which is what judge-model used to name. What moves is
+            # where the choice lives, so a workspace can price its judge by editing its
+            # own recipe rather than waiting for a release.
+            #
+            # A recipe with NO judge rule sends the judge to its default, i.e. the
+            # reviewer's own model, which agrees with itself while still reporting
+            # success. That is why the provisioned recipe carries the rule, and why
+            # setting judge-model explicitly stays the way to pin a model outright.
+            L2_MODEL="${JUDGE_MODEL:-$ROUTER}"
+            if node "$JUDGE" "$1" --model "$L2_MODEL" --threshold "$JUDGE_THRESHOLD" --out "$L2_OUT" 2>&1 \
                && [ -s "$L2_OUT" ]; then
               L2_IN_COUNT=$(node -pe "(require('$1').comments||[]).length")
               L2_OUT_COUNT=$(node -pe "(require('$L2_OUT').comments||[]).length")
-              echo "L2 judge ($JUDGE_MODEL, thr=$JUDGE_THRESHOLD): $L2_IN_COUNT -> $L2_OUT_COUNT"
+              echo "L2 judge ($L2_MODEL, thr=$JUDGE_THRESHOLD): $L2_IN_COUNT -> $L2_OUT_COUNT"
               mv "$L2_OUT" "$1"
               # L2 succeeded. Restore engine's block if we snapshotted one —
               # covers the case where L2 was warn-mode guardrail-hit and
@@ -1580,8 +1605,19 @@ runs:
         # of answering it more precisely each time.
         #
         # The review body and the summary say everything the reactions would.
-        ME_TYPE=$(gh api user --jq .type 2>/dev/null || echo "Bot")
-        if [ "$ME_TYPE" != "Bot" ]; then
+        # ONLY AN EXPLICIT "User" DECLINES. `gh api user` needs a user-scoped
+        # token, and github-token defaults to ${{ github.token }} — an
+        # installation token, for which that endpoint returns no user. The old
+        # `|| echo "Bot"` fallback was meant to cover that and did not: the call
+        # can exit 0 with no `.type`, so ME_TYPE came back empty, `!= "Bot"` held,
+        # and the reaction was skipped for EVERY consumer on the default token —
+        # the case this exists to serve. Measured on a real run: "belongs to a
+        # user, not an app" while the reaction author was github-actions[bot].
+        #
+        # Inverted to fail towards acting: a PAT identifies itself as type User,
+        # and anything else — 403, empty, Bot — reacts.
+        ME_TYPE=$(gh api user --jq .type 2>/dev/null) || ME_TYPE=""
+        if [ "$ME_TYPE" = "User" ]; then
           echo "github-token belongs to a user, not an app; leaving reactions alone"
           exit 0
         fi

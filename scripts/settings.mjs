@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Dashboard settings fetch for the OrcaCode Review cascade.
+// Dashboard settings fetch for the OrcaCode Review action.
 //
 //   node settings.mjs --url <orcarouter-url> --repo owner/name --out <path.json>
 //   (the API key comes from ORCAROUTER_API_KEY in the env, never a flag)
@@ -47,6 +47,16 @@ const DEFAULTS = Object.freeze({
   quiet: false,
   fix_first: "P0,P1",
   block_on: "P0,P1",
+  // EVERY severity, and this is the FAILURE value rather than the product
+  // default. A workspace created after report_on shipped gets P0,P1 written
+  // explicitly by the gateway, while one that predates the setting still
+  // resolves to every severity — so no single value here can match "what this
+  // workspace normally sees".
+  //
+  // So it fails OPEN. An install that normally shows P2/P3 must not lose them
+  // because a settings call timed out; the opposite mistake only shows a reader
+  // more than they asked for, once, in a run that already logged a fetch failure.
+  report_on: "P0,P1,P2,P3",
   rubric: "",
 });
 
@@ -81,7 +91,12 @@ function validateSettings(data) {
   if (TRIGGERS.has(data.trigger)) out.trigger = data.trigger;
   else fallback("trigger", data.trigger);
 
-  for (const field of ["fix_first", "block_on"]) {
+  // report_on rides in this loop because it is the same shape as the other two —
+  // a comma-joined severity subset where "" is a deliberate "none" — but it
+  // answers a different question: fix_first and block_on decide what the review
+  // ENFORCES, report_on only what it SHOWS. A gateway that predates the field
+  // omits it, which lands on the default above and behaves as before.
+  for (const field of ["fix_first", "block_on", "report_on"]) {
     const normalized = normalizeSeverityList(data[field]);
     if (normalized !== null) out[field] = normalized;
     else fallback(field, data[field]);

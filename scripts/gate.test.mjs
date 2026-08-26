@@ -1,12 +1,14 @@
-// Contract tests for gate.mjs — the cascade's decision primitive.
+// Contract tests for gate.mjs — the decision primitive behind the merge gate and
+// the exhaustive loop's early stop.
 //
-// The stateful cascade (action.yml) drives both the promotion choice and the
-// merge gate purely off this script's exit code:
-//   - promotion: `if gate --has $FIX_FIRST` is TRUE  -> stay on the cheap tier
-//                                             FALSE -> promote PR to strong tier
-//   - merge gate: `if gate --has $BLOCK_ON`  is TRUE  -> fail the check (block)
-// So locking down these exit codes locks down the review-routing logic. Run
-// these before changing anything about cascade/severity behavior.
+// Two callers depend on its exit code:
+//   - the merge gate: `gate --has $BLOCK_ON` TRUE  -> fail the check
+//                                            FALSE -> pass
+//   - the exhaustive loop: `gate --has $FIX_FIRST` TRUE -> stop adding passes,
+//     because the gate already blocks on what is in hand
+//
+// So the exit code IS the policy, and reading it backwards inverts both. Run
+// these before changing anything about severity behaviour.
 
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
@@ -40,27 +42,27 @@ function gate(contents, has) {
   }
 }
 
-const FIX_FIRST = "P0,P1"; // severities that hold the PR on the cheap tier
+const FIX_FIRST = "P0,P1"; // severities the exhaustive loop stops on
 const BLOCK_ON = "P0"; // severities that block the merge
 
-describe("promotion decision (--has FIX_FIRST)", () => {
-  test("P0 present -> match (stay on cheap tier, fix first)", () => {
+describe("exhaustive early-stop decision (--has FIX_FIRST)", () => {
+  test("P0 present -> match (stop adding passes; fix that first)", () => {
     assert.equal(gate(["[P0] sql injection", "[P2] use const"], FIX_FIRST), 0);
   });
 
-  test("P1 present -> match (stay on cheap tier)", () => {
+  test("P1 present -> match (stop adding passes)", () => {
     assert.equal(gate(["[P1] possible null deref"], FIX_FIRST), 0);
   });
 
-  test("P2-only -> no match (promote PR to strong tier)", () => {
+  test("P2-only -> no match (extra depth may still find something)", () => {
     assert.equal(gate(["[P2] use const", "[P2] dead code"], FIX_FIRST), 1);
   });
 
-  test("clean (no findings) -> no match (promote PR to strong tier)", () => {
+  test("clean (no findings) -> no match (extra depth may still find something)", () => {
     assert.equal(gate([], FIX_FIRST), 1);
   });
 
-  test("untagged finding -> treated as P1 (stay on cheap tier, fail-safe)", () => {
+  test("untagged finding -> treated as P1 (stop, fail-safe)", () => {
     assert.equal(gate(["no severity tag, but a real bug"], FIX_FIRST), 0);
   });
 });

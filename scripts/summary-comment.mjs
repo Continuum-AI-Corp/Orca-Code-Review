@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Edit-in-place PR summary comment for the OrcaCode Review cascade.
+// Edit-in-place PR summary comment for the OrcaCode Review action.
 //
 //   node summary-comment.mjs <result.json> --tier cheap|strong --push <n>
 //     --gate pass|blocked [--prev <file with the previous comment body>]
@@ -37,13 +37,13 @@
 // verdict itself always comes from --gate, which the driver computes with the
 // same configuration.
 //
-// HELD runs are the exception: when the cheap tier withheld the strong review
-// because a FIX-FIRST finding is present, the driver passes `--held`
-// `--fix-first <set>`. The block-on set may not include those severities (a
-// repo can even set block_on=""), so counting over block-on would render a
-// self-contradictory "❌ 0 findings block merge" next to the "held" tier line.
-// Under --held the ❌ count is taken over the fix-first set instead, so it
-// agrees with the held tier line and the ❌ verdict. Non-held is unchanged.
+// ALWAYS over block-on, with no exception. There used to be one: a held run —
+// a cheap pass withholding the strong review over a fix-first finding — counted
+// over the fix-first set instead, because block-on need not contain those
+// severities and "❌ 0 findings block merge" beside a "held" tier line
+// contradicts itself. There is no held run and no tier line now, so the count
+// and the gate read the same set, which is the property that matters: the
+// summary cannot claim something the merge gate does not enforce.
 
 import fs from "node:fs";
 import { SEVERITIES, countSeverities } from "./severity.mjs";
@@ -86,7 +86,6 @@ const blockOn = parseSet(opts.blockOn);
 const fixFirst = parseSet(opts.fixFirst);
 if (
   !file ||
-  !["cheap", "strong"].includes(opts.tier) ||
   !["pass", "blocked"].includes(opts.gate) ||
   !Number.isInteger(push) ||
   push < 1 ||
@@ -138,22 +137,22 @@ if (prev) {
 }
 lines.push("");
 
-if (opts.tier === "strong") {
-  lines.push(`Tier: STRONG (final pass) — ${opts.gate === "blocked" ? "blocked" : "pass"}`);
-} else if (opts.gate === "blocked") {
-  lines.push("Tier: CHEAP — held (fix P0/P1 first; the strong review runs once they're cleared)");
-} else {
-  lines.push("Tier: escalating to STRONG this run");
-}
-// Mode notes ride in the same status block as the tier line.
+// NO TIER LINE. It used to read "Tier: STRONG (final pass) — pass" and there is
+// one tier now, so the line said nothing the ✅/❌ verdict below does not already
+// say — and while the cascade existed it was also the only place a reader learned
+// their P0/P1 findings were withholding a second review. That mechanism is gone;
+// leaving its label behind would describe a decision nothing makes.
+//
+// Mode notes keep the status block they shared with it.
 if (passes > 1) lines.push(`exhaustive: ${passes} passes`);
 if (opts.quiet) lines.push("quiet mode: P2 shown in summary only");
 lines.push("");
 
-// A held run withheld escalation on fix-first findings, which block-on may not
-// cover — count over the fix-first set so the ❌ number agrees with the held
-// tier line and never renders "❌ 0 findings block merge". Non-held is unchanged.
-const blockingSet = opts.held ? fixFirst : blockOn;
+// Counted over block-on, which is what the gate enforces. The --held variant
+// (count over fix-first instead) went with the cascade: it existed so a withheld
+// escalation would not render "❌ 0 findings block merge" beside a held tier line,
+// and there is neither withholding nor a tier line any more.
+const blockingSet = blockOn;
 const blocking = blockingSet.reduce((n, s) => n + counts[s], 0);
 lines.push(
   opts.gate === "blocked"

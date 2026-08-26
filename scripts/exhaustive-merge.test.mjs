@@ -169,7 +169,7 @@ describe("robustness", () => {
 });
 
 // The exhaustive loop lives in action.yml's `run_review()` bash function, which
-// drives up to two EXTRA engine passes on the strong tier. Extra depth is
+// drives up to two EXTRA engine passes. Extra depth is
 // best-effort — a benign tooling/merge failure must warn+break and keep the
 // findings already in hand (round-2's guarantee) — but a guardrail/firewall
 // POLICY BLOCK on an extra pass is FATAL: OrcaRouter stopped the request before
@@ -223,7 +223,7 @@ node() {
 `;
     const script =
       `set -eo pipefail\n${extractRunReview()}\n${stubs}\n` +
-      `run_review "strong (escalation)" "cheap" "false" true\n` +
+      `run_review "review" "standard" "false" true\n` +
       `echo "SURVIVED passes=$PASSES"\n`;
     const r = spawnSync("bash", ["-c", script], {
       encoding: "utf8",

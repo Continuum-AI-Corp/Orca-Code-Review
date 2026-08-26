@@ -9,7 +9,7 @@
 // STRICTLY best-effort: any failure — bad file, refused connection, HTTP 5xx —
 // logs to stderr and still exits 0 (the child exit status is asserted below);
 // one retry, 5s timeout. The "report: false" disable switch is NOT in this script:
-// it is the `inputs.report == 'true'` guard on the two report steps in
+// it is the `inputs.report == 'true'` guard on the report step in
 // action.yml — the last test pins that guard so it can't be dropped.
 
 import http from "node:http";
@@ -86,7 +86,7 @@ const baseArgs = (file, port, extra = []) => [
   "--repo", "acme/widgets",
   "--pr", "42",
   "--sha", "deadbeef123",
-  "--tier", "cheap",
+  "--tier", "standard",
   "--gate", "blocked",
   "--url", `http://127.0.0.1:${port}/v1/chat/completions`,
   ...extra,
@@ -108,7 +108,7 @@ describe("payload assembly", () => {
         repo: "acme/widgets",
         pr_number: 42, // a NUMBER, not a string
         head_sha: "deadbeef123",
-        tier: "cheap",
+        tier: "standard",
         p0: 1,
         p1: 2, // [P1] + the untagged fail-safe
         p2: 2,
@@ -179,15 +179,22 @@ describe("best-effort (must never fail the job)", () => {
 });
 
 describe("disable switch (report: \"false\")", () => {
-  test("action.yml guards both per-tier report steps on the `report` input", () => {
+  test("action.yml guards the report step on the `report` input", () => {
     // The off switch lives at the STEP level, not in this script: when the
-    // consumer sets `report: "false"`, the steps are skipped entirely and
+    // consumer sets `report: "false"`, the step is skipped entirely and
     // report.mjs is never invoked. Pin the guard so a refactor can't drop it.
+    //
+    // ONE step, where this used to require two — one per tier. The assertion is
+    // written as a count equality rather than a fixed number so it holds whether
+    // there is one invocation or five: every one of them stays behind the switch.
     const actionYml = readFileSync(join(SCRIPTS, "..", "action.yml"), "utf8");
     const guards = actionYml.match(/inputs\.report == 'true'/g) || [];
-    assert.ok(
-      guards.length >= 2,
-      "both report steps (cheap + strong) must carry an `inputs.report == 'true'` if-guard",
+    const invocations = actionYml.match(/node "\$REPORT"/g) || [];
+    assert.ok(guards.length >= 1, "the report step must carry an `inputs.report == 'true'` if-guard");
+    assert.equal(
+      invocations.length,
+      guards.length,
+      "every report.mjs invocation must sit in a step guarded by the `report` input",
     );
   });
 });

@@ -106,25 +106,6 @@ describe("severity table", () => {
   });
 });
 
-describe("tier-state line", () => {
-  test("cheap + blocked -> held", () => {
-    const out = run(["[P0] a"], ["--tier", "cheap", "--push", "1", "--gate", "blocked"]);
-    assert.match(out, /Tier: CHEAP — held \(fix P0\/P1 first/);
-  });
-
-  test("cheap + pass -> escalating to STRONG this run", () => {
-    const out = run(["[P2] nit"], ["--tier", "cheap", "--push", "1", "--gate", "pass"]);
-    assert.match(out, /Tier: escalating to STRONG this run/);
-  });
-
-  test("strong -> final pass, with the gate outcome", () => {
-    const pass = run([], ["--tier", "strong", "--push", "2", "--gate", "pass"]);
-    assert.match(pass, /Tier: STRONG \(final pass\) — pass/);
-    const blocked = run(["[P0] a"], ["--tier", "strong", "--push", "2", "--gate", "blocked"]);
-    assert.match(blocked, /Tier: STRONG \(final pass\) — blocked/);
-  });
-});
-
 describe("gate line", () => {
   test("blocked -> ❌ with the blocking (P0+P1) count", () => {
     const out = run(
@@ -186,49 +167,21 @@ describe("gate line", () => {
   });
 });
 
-describe("held run (cheap tier withheld escalation on fix-first findings)", () => {
-  test("held + empty --block-on: the ❌ count follows the FIX-FIRST set, never the contradictory '0 findings'", () => {
+describe("the ❌ count follows block-on", () => {
+  // What used to be the "held run" suite. The cascade could withhold the strong
+  // review on fix-first findings, and the count then had to follow FIX-FIRST or
+  // the summary read "❌ 0 findings block merge" beside a held tier line. There is
+  // no withholding any more, so what survives is the case that was never about
+  // held runs at all.
+  test("the count follows --block-on, not --fix-first", () => {
+    // --fix-first is deliberately a DIFFERENT set here: it used to steer this
+    // count on a held run, and now it must not steer it at all.
     const out = run(
-      ["[P0] a", "[P1] b", "[P2] c"],
-      // block_on='' would make the block-on count 0; --held must count fix-first (P0+P1=2).
-      ["--tier", "cheap", "--push", "1", "--gate", "blocked", "--block-on", "", "--held", "--fix-first", "P0,P1"],
+      ["[P0] a", "[P2] b"],
+      ["--push", "1", "--gate", "blocked", "--block-on", "P2", "--fix-first", "P0"],
     );
-    assert.match(out, /Tier: CHEAP — held/, `held tier line expected:\n${out}`);
-    assert.ok(out.includes("❌ 2 findings block merge"), `held count must be over fix-first, got:\n${out}`);
-    assert.ok(!out.includes("❌ 0 findings"), "a held run must never render the self-contradictory 0-count");
-  });
-
-  test("held count uses fix-first even when block-on covers different severities", () => {
-    const out = run(
-      ["[P0] a", "[P1] b"],
-      ["--tier", "cheap", "--push", "1", "--gate", "blocked", "--block-on", "P2", "--held", "--fix-first", "P0,P1"],
-    );
-    assert.ok(out.includes("❌ 2 findings block merge"), `got:\n${out}`);
-  });
-
-  test("a single held finding reads singular", () => {
-    const out = run(
-      ["[P0] only"],
-      ["--tier", "cheap", "--push", "1", "--gate", "blocked", "--block-on", "", "--held", "--fix-first", "P0,P1"],
-    );
-    assert.ok(out.includes("❌ 1 finding blocks merge"), `got:\n${out}`);
-  });
-
-  test("non-held behavior is unchanged: the count still follows --block-on", () => {
-    const out = run(
-      ["[P0] a", "[P2] b", "[P2] c"],
-      ["--tier", "strong", "--push", "1", "--gate", "blocked", "--block-on", "P2"],
-    );
-    assert.ok(out.includes("❌ 2 findings block merge"), `got:\n${out}`);
-  });
-
-  test("an unknown severity in --fix-first exits 2 — a wiring bug must be loud", () => {
-    const r = spawnSync(
-      "node",
-      [SUMMARY, join(dir, "x.json"), "--tier", "cheap", "--push", "1", "--gate", "blocked", "--held", "--fix-first", "P0,P9"],
-      { encoding: "utf8" },
-    );
-    assert.equal(r.status, 2);
+    assert.ok(out.includes("❌ 1 finding blocks merge"), `got:
+${out}`);
   });
 });
 
@@ -286,9 +239,11 @@ describe("robustness", () => {
   test("bad usage (missing/invalid flags) exits 2 — a wiring bug must be loud", () => {
     for (const args of [
       [],
-      ["--tier", "cheap", "--push", "1"], // no --gate
-      ["--tier", "mid", "--push", "1", "--gate", "pass"], // bad tier
-      ["--tier", "cheap", "--push", "zero", "--gate", "pass"], // bad push
+      ["--push", "1"], // no --gate
+      ["--push", "zero", "--gate", "pass"], // bad push
+      // No bad-tier case: --tier is no longer validated here. There is one tier,
+      // the summary stopped rendering it, and the value the control plane records
+      // is checked by report.mjs and the gateway instead.
     ]) {
       const r = spawnSync("node", [SUMMARY, join(dir, "x.json"), ...args], { encoding: "utf8" });
       assert.equal(r.status, 2, `args ${JSON.stringify(args)} must exit 2`);

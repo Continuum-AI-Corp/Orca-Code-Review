@@ -1,20 +1,21 @@
 #!/usr/bin/env node
-// In-job fact-injecting proxy for the OrcaCode Review cascade.
+// In-job fact-injecting proxy for the OrcaCode Review action.
 //
 // OCR can only send the auth header (x-api-key / authorization) — it has no way
 // to attach custom headers. But the routing DSL routes on `headers[...]`. This
 // tiny loopback proxy bridges the gap: OCR talks to it (OCR_LLM_URL points
-// here), it stamps the cascade's raw-fact headers, and forwards everything —
+// here), it stamps the raw-fact headers, and forwards everything —
 // including SSE streams — to the real OrcaRouter endpoint.
 //
 // It is ephemeral: bound to 127.0.0.1 on an OS-assigned port, lives only for
 // the duration of one Actions job, and dies with it. Nothing is deployed.
 //
-// The facts are re-read from CR_FACTS_FILE on EVERY request, so the driver can
-// flip them between the cheap pass and the in-run strong escalation without
-// restarting the proxy. The file is a flat JSON object of header->value; an
-// absent/empty/unparseable file stamps nothing (the DSL falls through to its
-// default, i.e. the cheap tier).
+// The facts are re-read from CR_FACTS_FILE on EVERY request rather than captured
+// at startup, so the driver can change them mid-job without restarting the proxy.
+// The file is a flat JSON object of header->value; an absent, empty or
+// unparseable file stamps nothing, and the DSL then falls through to its default
+// — which is why a broken facts file degrades to "the default model reviewed it"
+// instead of failing the run.
 //
 // Retry: transient upstream failures are retried up to 3 more attempts with
 // 1s/2s/4s backoff; a numeric Retry-After header (seconds) wins, capped at

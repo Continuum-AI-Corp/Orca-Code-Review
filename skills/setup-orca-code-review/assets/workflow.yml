@@ -52,7 +52,7 @@ jobs:
           #
           # settings: "true"            # "false" = this file is authoritative
           # block-on: "P0,P1"           # severities that fail the check
-          # fix-first: "P0,P1"          # withhold the strong tier until fixed
+          # fix-first: "P0,P1"          # exhaustive only: stop adding passes once found
           # on-oversized-diff: "fail"   # "pass" makes an oversized skip advisory
           # auto-review-authors: ""     # public repos: e.g. "OWNER,MEMBER,COLLABORATOR,CONTRIBUTOR"
           # max-diff-kb: "512"

@@ -3,28 +3,23 @@
 # Consumers reference this with `uses:` instead of copying the folder; see
 # workflows/orca-code-review.yml for the ~15-line example workflow.
 #
-# Single-tier review (gpt-5.5): one review pass per run. The cheap->strong
-# cascade was retired after testing showed the cheap tier added no value online
-# — it fails closed on large diffs and otherwise just escalates anyway, taxing
-# every PR with latency for no decision. Size-based front routing (small->cheap,
-# large->strong, decided up front) is a planned later optimization and is also
-# single-pass, so this design stays forward-compatible. Findings post as inline
-# PR comments and a severity gate can fail the check to block the merge.
+# One review pass per pull-request push. Findings post as inline PR comments and
+# a severity gate can fail the check to block the merge.
 #
 # Model selection is NOT hardcoded here. The action emits raw facts
-# (x-cr-prev-tier / x-cr-prev-p0p1); it injects the strong-tier facts so the
-# router picks the single model. OCR can't send custom headers, so an in-job
-# loopback proxy (scripts/fact-proxy.mjs) stamps those facts onto OCR's
-# requests; the workspace router's DSL recipe (recipes/code-review.dsl.yaml)
-# maps them to the concrete model. The facts and rule shape are preserved so a
-# future size-based front-routing policy can re-diverge without an Action change.
+# (x-cr-prev-tier / x-cr-prev-p0p1) and never names a model; OCR cannot send
+# custom headers, so an in-job loopback proxy (scripts/fact-proxy.mjs) stamps
+# those facts onto its requests and the workspace router's DSL recipe
+# (recipes/code-review.dsl.yaml) turns them into a concrete model. Changing which
+# model reviews your code is therefore a recipe edit in your own workspace, with
+# no Action version to bump.
 #
-# Around the cascade: dashboard settings (scripts/settings.mjs, fetched
+# Around the review: dashboard settings (scripts/settings.mjs, fetched
 # fail-open from the gateway; `settings: "false"` skips the fetch and makes
 # the workflow file authoritative) gate auto reviews (auto_review / trigger),
 # retune fix-first/block-on, and switch on quiet mode (P2 muted at posting via
 # scripts/quiet-filter.mjs — the gate/report still see true counts), an
-# exhaustive mode (extra engine passes on the strong tier only, deduped by
+# exhaustive mode (extra engine passes, deduped by
 # scripts/exhaustive-merge.mjs), and a server-side rubric override; an
 # oversized-diff guard (scripts/diff-guard.mjs) decides review/skip BEFORE the
 # engine ever runs (a skip posts a notice and, by default, FAILS the check so
@@ -62,13 +57,18 @@ inputs:
   router:
     description: >-
       OrcaRouter router alias (orcarouter/<name>) that owns model selection.
-      The action names no models: it injects the cascade's raw facts
-      (x-cr-prev-tier / x-cr-prev-p0p1) as headers and this router's DSL recipe
-      maps them to the cheap/strong model. See recipes/code-review.dsl.yaml.
+      The action names no models: it injects raw facts (x-cr-prev-tier /
+      x-cr-prev-p0p1) as headers and this router's DSL recipe turns them into a
+      concrete model. See recipes/code-review.dsl.yaml.
     required: false
     default: "orcarouter/code-review"
   fix-first:
-    description: "Severities that withhold the strong tier until fixed at the cheap tier."
+    description: >-
+      Severities that stop an exhaustive review early: once a pass has found
+      one, no further passes are added, because that finding is what to fix
+      first. NO EFFECT unless exhaustive is on. It does not change what the
+      reviewer is asked to look for, and it does not block the merge — that
+      is block-on.
     required: false
     default: "P0,P1"
   block-on:
@@ -81,7 +81,7 @@ inputs:
       reviews (pull_request events). Empty = review everyone (default). On a
       PUBLIC repo, pull_request_target bypasses GitHub's fork-approval gate
       and the review key is wallet-metered, so an external user can trigger
-      paid cascades by opening PRs — set e.g.
+      paid reviews by opening PRs — set e.g.
       "OWNER,MEMBER,COLLABORATOR,CONTRIBUTOR" to auto-review only known
       contributors (others can still be reviewed on demand via
       /orcacode-review). Also set a wallet budget + alert on the key.
@@ -198,11 +198,17 @@ runs:
     # action writes there — above all policy-block.json, which the
     # always()-running "Surface guardrail / firewall block" step trusts and
     # would otherwise post as a false "merge is blocked" comment on a clean
-    # run whose cascade (and its own stale-file rm) never executed.
+    # run whose review step (and its own stale-file rm) never executed.
     - name: Clear stale run files
       shell: bash
       run: |
+        # result-cheap/result-strong are the pre-single-tier names, kept here on
+        # purpose: a reused self-hosted runner hard-cancelled under the older
+        # action still has them, and they hold finding text and source snippets.
+        # This step exists for exactly the files an earlier cleanup never
+        # reached, so renaming them out of the list would strand them.
         rm -f "$RUNNER_TEMP/result.json" "$RUNNER_TEMP/review.log" \
+          "$RUNNER_TEMP/result-final.json" "$RUNNER_TEMP/result-reported.json" \
           "$RUNNER_TEMP/result-cheap.json" "$RUNNER_TEMP/result-strong.json" \
           "$RUNNER_TEMP/result-posted.json" "$RUNNER_TEMP/result-extra.json" \
           "$RUNNER_TEMP/result-merged.json" \
@@ -257,16 +263,6 @@ runs:
           // in the workflow `if:`).
           core.setOutput('author_association', authorAssoc);
 
-          // Stateful tier: the PR carries an `orca-review:strong` label once it
-          // has been promoted to the strong model. No label means it is still on
-          // the cheap tier. One run uses exactly ONE model.
-          const labels = await github.paginate(
-            github.rest.issues.listLabelsOnIssue,
-            { owner: context.repo.owner, repo: context.repo.repo, issue_number: num, per_page: 100 },
-          );
-          const promoted = labels.some((l) => l.name === 'orca-review:strong');
-          core.setOutput('tier', promoted ? '1' : '0');
-          core.info(`PR #${num} review tier: ${promoted ? '1 (strong)' : '0 (cheap)'}`);
 
     # Lightweight 👀 acknowledgement so the requester sees the bot noticed the
     # trigger. Static one-shot (no update or removal). Fires early — before any
@@ -399,6 +395,10 @@ runs:
             echo "quiet=false"
             echo "fix_first=$INPUT_FIX_FIRST"
             echo "block_on=$INPUT_BLOCK_ON"
+            # Every severity: with the dashboard off there is no report_on to
+            # honour and the workflow file has no input for it, so display must
+            # not narrow on its own.
+            echo "report_on=P0,P1,P2,P3"
             echo "rubric_file="
             echo "decision=$DECISION"
             echo "reason=$REASON"
@@ -422,6 +422,12 @@ runs:
         QUIET=$(setting quiet false)
         FIX_FIRST=$(setting fix_first "P0,P1")
         BLOCK_ON=$(setting block_on "P0,P1")
+        # DISPLAY ONLY, and with no `with:` override on purpose: fix_first and
+        # block_on have workflow inputs because a repo may need to ENFORCE
+        # differently from the workspace default, whereas which severities a
+        # reader SEES is the workspace's call. Defaulting to every severity means
+        # a gateway that predates the field behaves exactly as before.
+        REPORT_ON=$(setting report_on "P0,P1,P2,P3")
         RUBRIC=$(setting rubric "")
 
         # PRECEDENCE (documented in the README): an explicit `with:` input that
@@ -445,7 +451,7 @@ runs:
         # while the author-allowlist spend guard inside it is identical in both
         # paths.
         gate_decision "$AUTO_REVIEW" "$TRIGGER" "$IS_DRAFT"
-        echo "settings: auto_review=$AUTO_REVIEW trigger=$TRIGGER exhaustive=$EXHAUSTIVE quiet=$QUIET fix_first=$FIX_FIRST block_on=$BLOCK_ON rubric=${RUBRIC_OUT:+custom} -> $DECISION ${REASON:+($REASON)}"
+        echo "settings: auto_review=$AUTO_REVIEW trigger=$TRIGGER exhaustive=$EXHAUSTIVE quiet=$QUIET fix_first=$FIX_FIRST block_on=$BLOCK_ON report_on=$REPORT_ON rubric=${RUBRIC_OUT:+custom} -> $DECISION ${REASON:+($REASON)}"
         {
           echo "auto_review=$AUTO_REVIEW"
           echo "trigger=$TRIGGER"
@@ -453,6 +459,7 @@ runs:
           echo "quiet=$QUIET"
           echo "fix_first=$FIX_FIRST"
           echo "block_on=$BLOCK_ON"
+          echo "report_on=$REPORT_ON"
           echo "rubric_file=$RUBRIC_OUT"
           echo "decision=$DECISION"
           echo "reason=$REASON"
@@ -637,12 +644,11 @@ runs:
         ENGINE_VERSION: ${{ inputs.engine-version }}
       run: npm install -g "@alibaba-group/open-code-review@${ENGINE_VERSION}"
 
-    - name: Review (stateful cost-tiered cascade)
-      id: cascade
+    - name: Review
+      id: review
       if: steps.settings.outputs.decision != 'skip' && steps.guard.outputs.decision != 'skip'
       shell: bash
       env:
-        TIER_STATE: ${{ steps.pr.outputs.tier }}
         ROUTER: ${{ inputs.router }}
         # Wall-clock ceiling for ONE engine pass; wrapped around `ocr review`
         # via GNU `timeout` inside run_pass. Passed as-is (units are minutes;
@@ -677,7 +683,7 @@ runs:
         PROXY: ${{ github.action_path }}/scripts/fact-proxy.mjs
         BRAND: ${{ inputs.brand }}
         # The real OrcaRouter endpoint. OCR does NOT talk to it directly: the
-        # in-job proxy stamps the cascade's facts as headers and forwards here.
+        # in-job proxy stamps the routing facts as headers and forwards here.
         ORCAROUTER_URL: ${{ inputs.orcarouter-url }}
         # Drive OCR entirely through env vars — its highest-priority config source.
         # Nothing is written to the shared ~/.opencodereview, so we neither leak a
@@ -696,10 +702,10 @@ runs:
         # $RUNNER_TEMP is runner-controlled and reset per job.
         RESULT: ${{ runner.temp }}/result.json
         REVIEW_LOG: ${{ runner.temp }}/review.log
-        # Per-tier snapshots of $RESULT (which the escalation pass overwrites):
-        # the report steps below need each tier's own severity counts.
-        RESULT_CHEAP: ${{ runner.temp }}/result-cheap.json
-        RESULT_STRONG: ${{ runner.temp }}/result-strong.json
+        # An unfiltered snapshot of $RESULT for the run report: it has to carry
+        # what the review FOUND, and $RESULT itself is the input to the display
+        # chain (report_on then quiet) further down.
+        RESULT_FINAL: ${{ runner.temp }}/result-final.json
         # Exhaustive-mode scratch: each extra engine pass lands in
         # $RESULT_EXTRA and is deduped into $RESULT via $RESULT_MERGED.
         RESULT_EXTRA: ${{ runner.temp }}/result-extra.json
@@ -712,7 +718,7 @@ runs:
         METER: ${{ inputs.meter }}
         USAGE_FILE: ${{ runner.temp }}/cr-usage.jsonl
         # The proxy writes the guardrail/firewall reason here on a block; a later
-        # always()-step posts it to the PR (the cascade itself fails closed).
+        # always()-step posts it to the PR (the review step itself fails closed).
         POLICY_BLOCK: ${{ runner.temp }}/policy-block.json
       run: |
         set -e
@@ -720,7 +726,7 @@ runs:
         # Security: we run with secrets against the PR head on pull_request_target,
         # so never let PR-controlled config weaken the review. A fork could commit
         # `.opencodereview/rule.json` to exclude its own changed files or replace
-        # the built-in checks, yielding an empty result that passes/promotes as
+        # the built-in checks, yielding an empty result that passes as
         # clean. Drop it so OCR uses system defaults + our --background instruction.
         rm -rf .opencodereview
 
@@ -757,7 +763,7 @@ runs:
         export OCR_LLM_URL
 
         # Set the raw facts the DSL routes on for the NEXT review pass.
-        #   $1 = prev tier (cheap|strong), $2 = prev pass found a fix-first (true|false)
+        #   $1 = prev-tier fact, $2 = prev pass found a fix-first (true|false)
         set_facts() {
           printf '{"x-cr-prev-tier":"%s","x-cr-prev-p0p1":"%s"}' "$1" "$2" > "$FACTS_FILE"
         }
@@ -901,18 +907,17 @@ runs:
           node "$CHECK" "$1" "$rc"
         }
 
-        # One TIER: the mandatory first pass, then — exhaustive mode, on the
-        # STRONG (enforced) tier only — up to 2 extra engine passes over the
-        # same diff (LLM reviews aren't exhaustive in one pass), each deduped
-        # into $RESULT by exhaustive-merge.mjs. Cheap-tier extras would be
-        # waste: a clear cheap pass escalates and the same-run strong review
-        # supersedes it, and a held one wants its fix-first findings fixed
-        # before more depth. The loop also stops as soon as a fix-first
-        # finding is in hand — the gate blocks on what we already have — or a
-        # pass adds nothing new. So the enforced tier runs at most 3 engine
-        # passes total. PASSES counts this tier's passes for the summary.
-        #   $1 = log label, $2 = prev tier fact, $3 = prev fix-first fact,
-        #   $4 = extra passes allowed (true only on the strong tier)
+        # The mandatory first pass, then — in exhaustive mode — up to 2 extra
+        # engine passes over the same diff, because an LLM review is not
+        # exhaustive in one pass. Each extra is deduped into $RESULT by
+        # exhaustive-merge.mjs.
+        #
+        # The loop stops early on either of two conditions: a fix-first finding is
+        # already in hand (the gate blocks on what we have, so more depth buys
+        # nothing yet), or a pass adds nothing new. So a run makes at most 3 engine
+        # passes. PASSES carries the count into the summary.
+        #   $1 = log label, $2 = prev-tier fact, $3 = prev fix-first fact,
+        #   $4 = extra passes allowed
         run_review() {
           if ! run_pass "$RESULT" "$1" "$2" "$3"; then
             if [ -f "$RUNNER_TEMP/wallclock-timeout" ]; then
@@ -970,26 +975,14 @@ runs:
           done
         }
 
-        # Single review pass per run (gpt-5.5). The cheap->strong cascade was
-        # retired: testing showed the cheap tier added no value online — it fails
-        # closed on large diffs and otherwise just escalates anyway, taxing every
-        # PR with latency for no decision. We inject the strong-tier facts
-        # (prev-tier=strong) so the DSL's `promoted` rule routes gpt-5.5 for every
-        # run, and run exactly one enforced pass (exhaustive extras still allowed
-        # via the 4th arg). PROMOTE/HELD stay false and `cheap_gate` is never
-        # written, so the promotion-label step and the cheap report step no-op and
-        # the Enforce step does a plain single-pass gate. Size-based front routing
-        # (small->cheap, large->strong, decided up front) is a planned later
-        # optimization and is also single-pass, so this shape stays
-        # forward-compatible: the facts and the DSL rule shape are preserved.
-        PROMOTE=false
-        HELD=false
+        # ONE PASS, one tier, one model. The routing FACTS are still injected —
+        # the recipe reads them, and a later size-based policy (decided up front,
+        # still single-pass) can re-diverge on them without touching this file or
+        # the Action version anyone has pinned. Which is why the facts outlived a
+        # change that removed everything else about tiers.
         PASSES=1
-        run_review "review (gpt-5.5)" "strong" "false" true
-        cp "$RESULT" "$RESULT_STRONG"
-        echo "strong_ran=true" >> "$GITHUB_OUTPUT"
-        echo "promote=$PROMOTE" >> "$GITHUB_OUTPUT"
-        echo "held=$HELD" >> "$GITHUB_OUTPUT"
+        run_review "review" "standard" "false" true
+        cp "$RESULT" "$RESULT_FINAL"
         # Engine passes behind the FINAL result (the last tier that ran) —
         # >1 only in exhaustive mode; the summary comment notes it.
         echo "passes=$PASSES" >> "$GITHUB_OUTPUT"
@@ -1015,12 +1008,12 @@ runs:
           echo "::endgroup::"
         fi
 
-    # If a dashboard guardrail/firewall blocked the request, the cascade above
+    # If a dashboard guardrail/firewall blocked the request, the review step above
     # failed closed and the normal review comment never runs. Surface the reason
     # on the PR so the block is actionable, not just a red X with a log line.
-    # always() so it posts despite the failed cascade; no-op when no block file.
+    # always() so it posts despite the failed review step; no-op when no block file.
     # The guard condition also keeps a STALE block file from being posted on a
-    # skipped run (the cascade's own cleanup never ran on a skip).
+    # skipped run (the review step's own cleanup never ran on a skip).
     - name: Surface guardrail / firewall block
       if: always() && steps.settings.outputs.decision != 'skip' && steps.guard.outputs.decision != 'skip'
       uses: actions/github-script@v7
@@ -1085,54 +1078,56 @@ runs:
             await github.rest.issues.updateComment({ ...repo, comment_id: existing.id, body });
           }
 
-    - name: Promote tier
-      if: steps.cascade.outputs.promote == 'true'
-      uses: actions/github-script@v7
-      env:
-        PR_NUMBER: ${{ steps.pr.outputs.number }}
-      with:
-        github-token: ${{ inputs.github-token }}
-        script: |
-          const num = Number(process.env.PR_NUMBER);
-          const repo = { owner: context.repo.owner, repo: context.repo.repo };
-          const name = 'orca-review:strong';
-
-          // The documented setup does not create this label, and addLabels only
-          // attaches labels that already exist — so ensure it exists first,
-          // otherwise the very first promotion would fail instead of recording.
-          try {
-            await github.rest.issues.getLabel({ ...repo, name });
-          } catch (e) {
-            if (e.status !== 404) throw e;
-            try {
-              await github.rest.issues.createLabel({
-                ...repo, name, color: '0e8a16',
-                description: 'OrcaCode Review: promoted to the strong model tier',
-              });
-              core.info(`Created repository label ${name}.`);
-            } catch (e2) {
-              // A parallel first promotion may have created it between our
-              // getLabel and createLabel — 422 "already_exists" is fine.
-              if (e2.status !== 422) throw e2;
-              core.info(`Label ${name} was created concurrently — continuing.`);
-            }
-          }
-
-          await github.rest.issues.addLabels({ ...repo, issue_number: num, labels: [name] });
-          core.info(`PR #${num} promoted to review tier 1 (strong model).`);
-
     # What gets POSTED is decoupled from what gets ENFORCED: this step always
     # produces $RESULT_POSTED for the posting step — a straight copy normally,
     # or with P2 comments dropped when quiet mode is on (dashboard settings).
     # The severity gate, the summary counts, and the run reports keep reading
     # the UNfiltered result: quiet mutes timeline noise, never enforcement.
+    # report_on: which severities the workspace wants PUBLISHED (dashboard →
+    # "Report severities"). The Action did not parse the field before, so the
+    # setting was offered and then silently ignored here.
+    #
+    # FIRST IN THE DISPLAY CHAIN, before quiet, because quiet's question is "is
+    # there anything left to say" and after a narrowed report_on there can be
+    # nothing left to say while the raw result is full of findings.
+    #
+    # The gate, the summary counts and the run report keep reading $RESULT — the
+    # unfiltered file. report_on changes what lands on the PR, never what is
+    # enforced or measured; the union with block_on inside the script is what stops
+    # a display preference from hiding a merge blocker.
+    - name: report_on severity filter
+      if: steps.settings.outputs.decision != 'skip' && steps.guard.outputs.decision != 'skip'
+      shell: bash
+      env:
+        REPORT_FILTER: ${{ github.action_path }}/scripts/report-filter.mjs
+        REPORT_ON: ${{ steps.settings.outputs.report_on }}
+        BLOCK_ON: ${{ steps.settings.outputs.block_on }}
+        RESULT: ${{ runner.temp }}/result.json
+        RESULT_REPORTED: ${{ runner.temp }}/result-reported.json
+      run: |
+        # ALWAYS --show, including when it is empty. The script reads an ABSENT
+        # flag as "no setting to apply" and passes everything through, and an
+        # EMPTY one as "publish only what blocks" — two different answers, and
+        # only one of them can be right here. The settings step always emits a
+        # value: the dashboard path forwards what was configured, and the
+        # disabled path writes every severity explicitly. So an empty value
+        # arriving here can only be the configured "show only what blocks",
+        # and guarding on `-n` published everything instead.
+        #
+        # There is no path where this is empty because nothing wrote it: if the
+        # settings step fails outright it fails the job, having no
+        # continue-on-error.
+        node "$REPORT_FILTER" "$RESULT" \
+          --show "$REPORT_ON" --block-on "$BLOCK_ON" --out "$RESULT_REPORTED"
+
     - name: Quiet mode filter
       if: steps.settings.outputs.decision != 'skip' && steps.guard.outputs.decision != 'skip'
       shell: bash
       env:
         QUIET: ${{ steps.settings.outputs.quiet }}
         QUIET_FILTER: ${{ github.action_path }}/scripts/quiet-filter.mjs
-        RESULT: ${{ runner.temp }}/result.json
+        # The report_on-filtered copy, not the raw result — see the step above.
+        RESULT: ${{ runner.temp }}/result-reported.json
         RESULT_POSTED: ${{ runner.temp }}/result-posted.json
       run: |
         if [ "$QUIET" = "true" ]; then
@@ -1278,12 +1273,8 @@ runs:
         INJECT_SCRIPT: ${{ github.action_path }}/scripts/inject-summary.mjs
         GATE: ${{ github.action_path }}/scripts/gate.mjs
         BLOCK_ON: ${{ steps.settings.outputs.block_on }}
-        # Fix-first set — the ❌ count is taken over THIS (not block-on) on a held run.
-        FIX_FIRST: ${{ steps.settings.outputs.fix_first }}
-        HELD: ${{ steps.cascade.outputs.held }}
-        STRONG_RAN: ${{ steps.cascade.outputs.strong_ran }}
         QUIET: ${{ steps.settings.outputs.quiet }}
-        PASSES: ${{ steps.cascade.outputs.passes }}
+        PASSES: ${{ steps.review.outputs.passes }}
       with:
         github-token: ${{ inputs.github-token }}
         script: |
@@ -1332,29 +1323,21 @@ runs:
             }
           }
 
-          // Mirror the enforce step's verdict: held blocks; otherwise gate.mjs
-          // on the final result (exit 0 = a BLOCK_ON severity is present).
-          let blocked = process.env.HELD === 'true';
-          if (!blocked) {
-            try {
-              execFileSync('node', [process.env.GATE, process.env.RESULT, '--has', process.env.BLOCK_ON], { stdio: 'pipe' });
-              blocked = true;
-            } catch { blocked = false; }
-          }
-          const tier = process.env.STRONG_RAN === 'true' ? 'strong' : 'cheap';
-          args.push('--tier', tier, '--push', String(push), '--gate', blocked ? 'blocked' : 'pass');
+          // Mirror the enforce step's verdict: gate.mjs on the final result
+          // (exit 0 = a BLOCK_ON severity is present).
+          let blocked;
+          try {
+            execFileSync('node', [process.env.GATE, process.env.RESULT, '--has', process.env.BLOCK_ON], { stdio: 'pipe' });
+            blocked = true;
+          } catch { blocked = false; }
+          // One tier, one name. This used to report `strong`, from when a cheap
+          // pass could escalate to a strong one; with a single pass the label was
+          // a leftover that made per-tier figures meaningless.
+          args.push('--tier', 'standard', '--push', String(push), '--gate', blocked ? 'blocked' : 'pass');
           // The ❌ line counts findings against the EFFECTIVE block-on set
           // (dashboard/input precedence already applied) — an empty string is
           // a deliberate "block on nothing" and passes through as-is.
           args.push('--block-on', process.env.BLOCK_ON ?? 'P0,P1');
-          // Held run (cheap tier withheld escalation on fix-first findings): the
-          // ❌ count must reflect the FIX-FIRST set, not block-on — block-on may
-          // not include those severities (a repo can even set block_on=''), and
-          // counting over it would render "❌ 0 findings block merge" next to the
-          // held tier line. --held switches the count to fix-first.
-          if (process.env.HELD === 'true') {
-            args.push('--held', '--fix-first', process.env.FIX_FIRST ?? 'P0,P1');
-          }
           // Mode notes: exhaustive pass count (renders only when > 1) and the
           // quiet-mode explainer next to the true counts.
           args.push('--passes', process.env.PASSES || '1');
@@ -1374,16 +1357,10 @@ runs:
         BRAND: ${{ inputs.brand }}
         # Effective values after the settings/input precedence rule.
         BLOCK_ON: ${{ steps.settings.outputs.block_on }}
-        FIX_FIRST: ${{ steps.settings.outputs.fix_first }}
-        HELD: ${{ steps.cascade.outputs.held }}
         GATE: ${{ github.action_path }}/scripts/gate.mjs
         # ALWAYS the unfiltered result — quiet mode never weakens the gate.
         RESULT: ${{ runner.temp }}/result.json
       run: |
-        if [ "$HELD" = "true" ]; then
-          echo "::error::$BRAND: cheap tier found $FIX_FIRST finding(s) to fix before the strong-tier review runs — blocking."
-          exit 1
-        fi
         if node "$GATE" "$RESULT" --has "$BLOCK_ON"; then
           echo "::error::$BRAND: blocking — found $BLOCK_ON severity finding(s)."
           exit 1
@@ -1395,34 +1372,13 @@ runs:
     # reporting"). One step per tier that ran, AFTER the gate: always() because
     # a blocked gate fails the job above, and blocked runs must report too.
     # report.mjs itself exits 0 on any error, so these steps can't fail the job.
-    - name: Report run (cheap tier)
-      # `cheap_gate` doubles as "the cheap tier ran to a gate decision".
-      if: always() && inputs.report == 'true' && steps.cascade.outputs.cheap_gate != ''
-      shell: bash
-      env:
-        REPORT: ${{ github.action_path }}/scripts/report.mjs
-        RESULT_CHEAP: ${{ runner.temp }}/result-cheap.json
-        REPO: ${{ github.repository }}
-        PR_NUMBER: ${{ steps.pr.outputs.number }}
-        HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
-        CHEAP_GATE: ${{ steps.cascade.outputs.cheap_gate }}
-        ORCAROUTER_URL: ${{ inputs.orcarouter-url }}
-        ORCAROUTER_API_KEY: ${{ inputs.orcarouter-api-key }}
-        ENGINE_VERSION: ${{ inputs.engine-version }}
-      run: |
-        node "$REPORT" "$RESULT_CHEAP" \
-          --repo "$REPO" --pr "$PR_NUMBER" --sha "$HEAD_SHA" \
-          --tier cheap --gate "$CHEAP_GATE" \
-          --url "$ORCAROUTER_URL" \
-          --engine-version "$ENGINE_VERSION"
-
-    - name: Report run (strong tier)
-      if: always() && inputs.report == 'true' && steps.cascade.outputs.strong_ran == 'true'
+    - name: Report run
+      if: always() && inputs.report == 'true' && steps.settings.outputs.decision != 'skip' && steps.guard.outputs.decision != 'skip'
       shell: bash
       env:
         REPORT: ${{ github.action_path }}/scripts/report.mjs
         GATE: ${{ github.action_path }}/scripts/gate.mjs
-        RESULT_STRONG: ${{ runner.temp }}/result-strong.json
+        RESULT_FINAL: ${{ runner.temp }}/result-final.json
         BLOCK_ON: ${{ steps.settings.outputs.block_on }}
         REPO: ${{ github.repository }}
         PR_NUMBER: ${{ steps.pr.outputs.number }}
@@ -1431,13 +1387,13 @@ runs:
         ORCAROUTER_API_KEY: ${{ inputs.orcarouter-api-key }}
         ENGINE_VERSION: ${{ inputs.engine-version }}
       run: |
-        # The strong tier's verdict re-uses gate.mjs on its snapshot
+        # The verdict re-uses gate.mjs on the snapshot
         # (exit 0 = a BLOCK_ON severity is present = blocked).
         GATE_RESULT=pass
-        if node "$GATE" "$RESULT_STRONG" --has "$BLOCK_ON"; then GATE_RESULT=blocked; fi
-        node "$REPORT" "$RESULT_STRONG" \
+        if node "$GATE" "$RESULT_FINAL" --has "$BLOCK_ON"; then GATE_RESULT=blocked; fi
+        node "$REPORT" "$RESULT_FINAL" \
           --repo "$REPO" --pr "$PR_NUMBER" --sha "$HEAD_SHA" \
-          --tier strong --gate "$GATE_RESULT" \
+          --tier standard --gate "$GATE_RESULT" \
           --url "$ORCAROUTER_URL" \
           --engine-version "$ENGINE_VERSION"
 
@@ -1451,7 +1407,7 @@ runs:
         # settings come from env vars), and deleting it would corrupt the OCR
         # state of other jobs/users on the same runner.
         rm -f "$RUNNER_TEMP/result.json" "$RUNNER_TEMP/review.log" \
-          "$RUNNER_TEMP/result-cheap.json" "$RUNNER_TEMP/result-strong.json" \
+          "$RUNNER_TEMP/result-final.json" "$RUNNER_TEMP/result-reported.json" \
           "$RUNNER_TEMP/result-posted.json" "$RUNNER_TEMP/result-extra.json" \
           "$RUNNER_TEMP/result-merged.json" \
           "$RUNNER_TEMP/cr-settings.json" "$RUNNER_TEMP/cr-rubric.md" \

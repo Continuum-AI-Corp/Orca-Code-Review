@@ -81,6 +81,21 @@ Fix by pinning a newer tag or an immutable commit SHA instead of `@v1`.
   the same model is not an independent second opinion.
 - Turn on quiet mode to keep P2 out of the PR while still counting it.
 
+## Every PR gets two sets of comments
+
+The Action and the GitHub App are both installed. They review the same pull
+requests independently, so the repo pays twice and the author reads everything
+twice.
+
+| Check | How |
+| --- | --- |
+| Action present | `git show origin/<default>:.github/workflows/orca-code-review.yml` |
+| App present | A bot review, or a check on a recent PR that no workflow in the repo produces |
+
+Keep one. Removing the Action is the reversible half — delete the workflow (drop
+the required check first). Removing the App means revoking its installation on
+GitHub, which is a permission change someone with admin rights has to make.
+
 ## Merges are not actually blocked
 
 A red check blocks nothing until it is required. Add **`review`** under

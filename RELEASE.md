@@ -177,10 +177,16 @@ the README platform list, and the orcadub README.
 
 #### Adding a user-facing string
 
-`bin/i18n.mjs` holds both languages. `scripts/i18n.test.mjs` fails the build if
-the two tables diverge — a missing Chinese key, a key only Chinese has, or a
-parameterized string whose two versions take different argument counts (which
-would silently drop a branch name or a count from the Chinese output).
+`bin/i18n.mjs` holds every language. `scripts/i18n.test.mjs` checks each
+translation against English and fails the build on a missing key, a
+translation-only key, or a parameterized string whose versions take different
+argument counts (which would silently drop a branch name or a count).
+
+Adding a language is three edits: append the code to `LANGUAGES`, add its
+locale prefixes to `LOCALE_PREFIX`, add the table. The language picker is
+generated from `LANGUAGES`, and a `lang.<code>` label is required in *every*
+table so each language can name the others — a test enforces that. Nothing else
+needs touching.
 
 Translate prose only. Flags, platform IDs, workflow inputs, severity codes,
 paths, and shell commands stay verbatim in both languages: a reader of the

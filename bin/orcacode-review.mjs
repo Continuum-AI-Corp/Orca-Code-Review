@@ -35,7 +35,7 @@ import { spawnSync } from "node:child_process";
 
 import { SKILL_PLATFORMS, POPULAR_PLATFORM_IDS, findPlatform, detectPlatforms, resolveTargets } from "./platforms.mjs";
 import { installTree, STATUS } from "./skill-tree.mjs";
-import { makeT, detectLanguage, parseLanguage } from "./i18n.mjs";
+import { LANGUAGES, makeT, detectLanguage, parseLanguage } from "./i18n.mjs";
 import { renderBanner } from "./banner.mjs";
 import * as tui from "./prompt.mjs";
 
@@ -224,14 +224,12 @@ async function multiSelectTyped(question, options, { preselected = [] } = {}) {
 // language has been chosen.
 async function askLanguage(argv) {
   if (argv.lang || ASSUME_YES || !process.stdin.isTTY) return;
-  const picked = await select(
-    t("lang.question"),
-    [
-      { label: t("lang.en"), value: "en" },
-      { label: t("lang.zh"), value: "zh" },
-    ],
-    { defaultIndex: LANG === "zh" ? 1 : 0 },
-  );
+  // Built from LANGUAGES so adding a table is the only step — a hardcoded list
+  // here would silently ship a language nobody can select.
+  const options = LANGUAGES.map((code) => ({ label: t(`lang.${code}`), value: code }));
+  const picked = await select(t("lang.question"), options, {
+    defaultIndex: Math.max(0, LANGUAGES.indexOf(LANG)),
+  });
   setLanguage(picked);
 }
 

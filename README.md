@@ -90,13 +90,17 @@ An existing identical skill is left unchanged; an existing **different** one is 
 
 ### Language
 
-The CLI speaks **English and Simplified Chinese**, picked from your locale (`LC_ALL` / `LC_MESSAGES` / `LANG`). Override it per run, or pin it for good:
+The CLI speaks **English, Simplified Chinese, Japanese and Korean**, picked from your locale (`LC_ALL` / `LC_MESSAGES` / `LANG`). Override it per run, or pin it for good:
 
 ```bash
-npx @orcarouter/code-review --lang zh          # 中文界面
 npx @orcarouter/code-review --lang en          # English
-export ORCACODE_LANG=zh                # 固定下来
+npx @orcarouter/code-review --lang zh          # 简体中文
+npx @orcarouter/code-review --lang ja          # 日本語
+npx @orcarouter/code-review --lang ko          # 한국어
+export ORCACODE_LANG=ja                        # pin it
 ```
+
+Traditional Chinese locales (`zh-TW`, `zh-HK`) fall back to English on purpose — the vocabulary diverges enough that serving Simplified reads worse than not translating at all.
 
 Guided flows open with a language screen when `--lang` is not given. Add `--no-banner` to skip the wordmark.
 

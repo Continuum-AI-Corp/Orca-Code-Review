@@ -26,37 +26,44 @@ const lookup = (table, key) => key.split(".").reduce((n, p) => n?.[p], table);
 
 // ------------------------------------------------------------------- table ---
 
-test("Chinese covers every English key", () => {
-  // A missing key falls back to English, which reads as a half-translated tool.
-  const missing = flatten(TABLES.en).filter((k) => lookup(TABLES.zh, k) === undefined);
-  assert.deepEqual(missing, [], `untranslated keys: ${missing.join(", ")}`);
-});
+// Every non-English table is checked against English. The earlier version only
+// checked Chinese, so adding Japanese and Korean would have been able to ship
+// half-translated with a green suite.
+const TRANSLATIONS = LANGUAGES.filter((l) => l !== "en");
 
-test("Chinese adds no keys English lacks", () => {
-  // A zh-only key is dead weight: nothing reads it, and it hides the fact that
-  // the English side was never written.
-  const extra = flatten(TABLES.zh).filter((k) => lookup(TABLES.en, k) === undefined);
-  assert.deepEqual(extra, [], `zh-only keys: ${extra.join(", ")}`);
-});
+for (const lang of TRANSLATIONS) {
+  test(`${lang} covers every English key`, () => {
+    // A missing key falls back to English, which reads as a half-translated tool.
+    const missing = flatten(TABLES.en).filter((k) => lookup(TABLES[lang], k) === undefined);
+    assert.deepEqual(missing, [], `untranslated ${lang} keys: ${missing.join(", ")}`);
+  });
 
-test("a key is a function in both languages or neither", () => {
-  // A parameterized English string paired with a plain Chinese one silently
-  // drops the argument — the branch name or count just vanishes.
-  const mismatched = flatten(TABLES.en).filter(
-    (k) => typeof lookup(TABLES.en, k) !== typeof lookup(TABLES.zh, k),
-  );
-  assert.deepEqual(mismatched, [], `arity mismatch: ${mismatched.join(", ")}`);
-});
+  test(`${lang} adds no keys English lacks`, () => {
+    // A language-only key is dead weight, and it hides that the English side
+    // was never written.
+    const extra = flatten(TABLES[lang]).filter((k) => lookup(TABLES.en, k) === undefined);
+    assert.deepEqual(extra, [], `${lang}-only keys: ${extra.join(", ")}`);
+  });
 
-test("parameterized strings take the same argument count in both languages", () => {
-  for (const key of flatten(TABLES.en)) {
-    const en = lookup(TABLES.en, key);
-    if (typeof en !== "function") continue;
-    assert.equal(lookup(TABLES.zh, key).length, en.length, `${key}: differing arity`);
-  }
-});
+  test(`${lang} keys are functions exactly where English keys are`, () => {
+    // A parameterized English string paired with a plain translation silently
+    // drops the argument — the branch name or count just vanishes.
+    const mismatched = flatten(TABLES.en).filter(
+      (k) => typeof lookup(TABLES.en, k) !== typeof lookup(TABLES[lang], k),
+    );
+    assert.deepEqual(mismatched, [], `${lang} arity mismatch: ${mismatched.join(", ")}`);
+  });
 
-test("every string is non-empty in both languages", () => {
+  test(`${lang} takes the same argument count as English`, () => {
+    for (const key of flatten(TABLES.en)) {
+      const en = lookup(TABLES.en, key);
+      if (typeof en !== "function") continue;
+      assert.equal(lookup(TABLES[lang], key).length, en.length, `${lang}.${key}: differing arity`);
+    }
+  });
+}
+
+test("every string is non-empty in every language", () => {
   for (const lang of LANGUAGES) {
     for (const key of flatten(TABLES[lang])) {
       const value = lookup(TABLES[lang], key);
@@ -68,12 +75,22 @@ test("every string is non-empty in both languages", () => {
   }
 });
 
+test("every language can name every language", () => {
+  // The language screen is generated from LANGUAGES, so a missing label would
+  // render an empty row the user cannot identify.
+  for (const lang of LANGUAGES) {
+    for (const other of LANGUAGES) {
+      assert.ok(lookup(TABLES[lang], `lang.${other}`), `${lang} cannot name ${other}`);
+    }
+  }
+});
+
 test("commands and flags survive translation", () => {
-  // A reader of the Chinese output still has to type these. Translating or
+  // A reader of any translation still has to type these. Translating or
   // dropping one produces an instruction that cannot be followed.
   //
   // The invariant is derived from English rather than hardcoded: a literal the
-  // English table never mentions proves nothing about the Chinese one.
+  // English table never mentions proves nothing about the others.
   const render = (lang) =>
     JSON.stringify(
       flatten(TABLES[lang]).map((k) => {
@@ -82,7 +99,6 @@ test("commands and flags survive translation", () => {
       }),
     );
   const en = render("en");
-  const zh = render("zh");
 
   const candidates = [
     "--force", "--platform", "--scope", "--yes", "--help", "--lang",
@@ -92,7 +108,13 @@ test("commands and flags survive translation", () => {
   ];
   const present = candidates.filter((literal) => en.includes(literal));
   assert.ok(present.length >= 10, "the English table stopped mentioning the literals this test guards");
-  for (const literal of present) assert.ok(zh.includes(literal), `zh table lost the literal: ${literal}`);
+
+  for (const lang of TRANSLATIONS) {
+    const text = render(lang);
+    for (const literal of present) {
+      assert.ok(text.includes(literal), `${lang} lost the literal: ${literal}`);
+    }
+  }
 });
 
 // ----------------------------------------------------------------- selection ---
@@ -116,11 +138,23 @@ test("parseLanguage accepts zh/en in any casing and rejects the rest", () => {
   assert.throws(() => parseLanguage("fr"), /unknown language/);
 });
 
-test("locale detection maps the Chinese locales and defaults to English", () => {
+test("locale detection maps each supported language and defaults to English", () => {
   assert.equal(detectLanguage({ LANG: "zh_CN.UTF-8" }), "zh");
-  assert.equal(detectLanguage({ LC_ALL: "zh_TW.UTF-8" }), "en"); // Traditional is not translated
+  assert.equal(detectLanguage({ LANG: "ja_JP.UTF-8" }), "ja");
+  assert.equal(detectLanguage({ LANG: "ko_KR.UTF-8" }), "ko");
   assert.equal(detectLanguage({ LANG: "en_US.UTF-8" }), "en");
   assert.equal(detectLanguage({}), "en");
+});
+
+test("Traditional Chinese falls back to English rather than Simplified", () => {
+  // zh-TW/zh-HK diverge enough in vocabulary that serving Simplified reads
+  // worse than serving English. Deliberate, so pin it.
+  assert.equal(detectLanguage({ LC_ALL: "zh_TW.UTF-8" }), "en");
+  assert.equal(detectLanguage({ LC_ALL: "zh_HK.UTF-8" }), "en");
+});
+
+test("--lang accepts every language the picker offers", () => {
+  for (const lang of LANGUAGES) assert.equal(parseLanguage(lang), lang);
 });
 
 test("LC_ALL outranks LANG, and ORCACODE_LANG outranks both", () => {

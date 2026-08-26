@@ -1172,12 +1172,82 @@ runs:
             `\n\n<sub>[OrcaCode Review](https://www.orcarouter.ai/code-review) — ` +
             `Route Smarter. Ship Safer. Spend Less.</sub>`;
 
+          // THE 👍 IS THE PR-LEVEL ANSWER, and it is settled on every run rather
+          // than only placed. GitHub reactions have no update — add and remove
+          // are all there is — so a marker that is only ever added drifts: a head
+          // that was clean keeps its thumb after a later push breaks something,
+          // and the one question it exists to answer stops being answerable.
+          //
+          // OURS BY LOGIN, not by "is a bot". Filtering on user.type === 'Bot'
+          // was the first version and it is wrong in a way that only shows up
+          // where it matters: a repository reviewed by BOTH this Action and the
+          // hosted App has two bots reacting, and that filter would have had
+          // each one deleting the other's 👍 on every run. The endpoint deletes
+          // by id, so the identity has to be exact.
+          //
+          // getAuthenticated() answers for a PAT or an App token; the default
+          // GITHUB_TOKEN is an installation token and 401s there, and its
+          // reactions carry `github-actions[bot]`. So: ask, else assume the
+          // default — never widen to "any bot".
+          //
+          // Best-effort: a reaction is worth no failed run, and the review body
+          // below is the authoritative statement either way.
+          let meLogin = 'github-actions[bot]';
+          try {
+            meLogin = (await github.rest.users.getAuthenticated()).data.login;
+          } catch (e) {
+            // Expected on the default token.
+          }
+          const settleThumb = async (clean) => {
+            try {
+              const mine = (await github.paginate(github.rest.reactions.listForIssue, {
+                ...repo, issue_number: num, per_page: 100,
+              })).filter((r) => r.content === '+1' && r.user && r.user.login === meLogin);
+              if (clean) {
+                if (mine.length === 0) {
+                  await github.rest.reactions.createForIssue({ ...repo, issue_number: num, content: '+1' });
+                }
+              } else {
+                for (const r of mine) {
+                  await github.rest.reactions.deleteForIssue({ ...repo, issue_number: num, reaction_id: r.id });
+                }
+              }
+            } catch (e) {
+              console.log('reaction not settled (non-fatal):', e.message);
+            }
+          };
+
           if (comments.length === 0) {
-            // Clean run: no separate notice — the upserted summary comment
-            // (next step) already reports the clean state without adding a
-            // new timeline entry on every push.
+            // A CLEAN RUN SAYS SO. This used to return silently and leave the
+            // pinned summary to report it — but the summary sits in the PR
+            // description, folded and above the fold only if you scroll, so a
+            // reviewer who asked for a review got no visible answer at all. The
+            // hosted reviewer posts this same sentence; two paths reviewing one
+            // repository should not disagree about what "nothing to flag" looks
+            // like.
+            //
+            // Still one timeline entry per push, which was the original worry.
+            // That is what the 👍 is for: the entry states the result once, and
+            // the reaction is the at-a-glance version that updates in place.
+            await settleThumb(true);
+            const cleanBody =
+              `## 🐳 ${brand}\n\n` +
+              `✅ **No findings** — nothing to flag in this PR. Great work!`;
+            try {
+              await github.rest.pulls.createReview({
+                ...repo, pull_number: num, commit_id: sha,
+                body: cleanBody + footer, event: 'COMMENT',
+              });
+            } catch (e) {
+              console.log('Clean review failed, posting as a comment:', e.message);
+              await github.rest.issues.createComment({
+                ...repo, issue_number: num, body: cleanBody + footer,
+              });
+            }
             return;
           }
+          // Findings exist, so any 👍 from an earlier head is now false.
+          await settleThumb(false);
 
           // Severity from the LEADING [P0]/[P1]/[P2]/[P3] tag only (mirrors gate.mjs);
           // a later mention must not override the missing-tag P1 fail-safe.

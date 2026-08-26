@@ -1606,54 +1606,41 @@ runs:
         fi
 
         # ------------------------------------------------------------------
-        # THE 👍, SETTLED WHERE EVERY ENDING IS VISIBLE.
+        # THE 👍 IS PLACED AND NEVER WITHDRAWN — a product decision, and it
+        # deletes more code than it adds rules.
         #
-        # It used to be added inside the posting step, which is one ending out of
-        # several: a settings skip, an oversized diff, a guardrail block, an
-        # engine failure or a rejected post all finish without going near it. A
-        # thumb only that step maintains is one every other ending leaves in
-        # place, endorsing a head nobody reviewed. This step runs on always().
+        # Withdrawing was the source of the concurrency problem this step kept
+        # growing conditions for: with no serialisation between invocations, an
+        # older findings run finishing after a newer clean one removed a thumb
+        # that correctly described the current head, and the justification for
+        # leaving the delete unguarded — "the current run re-adds it" — only held
+        # when the current run finished last, which nothing guarantees. Remove
+        # the withdrawal and the whole class goes with it.
         #
-        THUMBS="repos/$REPO/issues/$PR_NUMBER/reactions"
-        MINE=$(gh api "$THUMBS" --paginate \
-          --jq '.[] | select(.content=="+1") | select(.user.login=="'"$ME"'") | .id' \
-          2>/dev/null || true)
-        # ONLY IF THIS RUN STILL DESCRIBES THE PR. Nothing serialises invocations,
-        # so an older clean run can finish AFTER a newer findings/skipped/failed
-        # run has withdrawn the thumb — and its local marker would put it back,
-        # endorsing a head that run never saw.
+        # What it costs, stated plainly: a head that was clean keeps its 👍 after
+        # a later push breaks something. The review comment on that later push
+        # says so, and the pinned summary says so; the thumb becomes "some head
+        # of this PR reviewed clean" rather than "the current one does". The
+        # hosted reviewer has made the same trade since it shipped, so the two
+        # paths now agree about what the mark means.
         #
-        # Withdrawal needs no such check and deliberately does not have one: a
-        # thumb removed by a stale run is re-added by the current one on its own
-        # completion, so the failure direction is a moment without a 👍 rather
-        # than a 👍 over unreviewed code.
-        # AN UNCONFIRMED HEAD COUNTS AS MOVED. Adding on a failed lookup would
-        # contradict the rule this check exists for — the thumb must not endorse
-        # a head this run did not review, and "could not tell" is not evidence
-        # that it did. A clean run that loses the race or the API call simply
-        # goes without, and the next run puts it back.
+        # ONLY FOR THE HEAD THIS RUN REVIEWED, and that guard matters MORE now
+        # rather than less: a wrong add is permanent. An unconfirmed head counts
+        # as moved — "could not tell" is not evidence that it did not.
+        if [ ! -f "$RUNNER_TEMP/cr-clean" ]; then
+          echo "not a clean run; leaving 👍 alone"
+          exit 0
+        fi
         CURRENT_SHA=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq .head.sha 2>/dev/null || echo "")
-        if [ -f "$RUNNER_TEMP/cr-clean" ] && [ "$CURRENT_SHA" != "$HEAD_SHA" ]; then
+        if [ "$CURRENT_SHA" != "$HEAD_SHA" ]; then
           echo "cannot confirm this run still describes the PR head (${HEAD_SHA} vs ${CURRENT_SHA:-unknown}); leaving 👍 alone"
           exit 0
         fi
-        if [ -f "$RUNNER_TEMP/cr-clean" ]; then
-          # Clean, and only this run's own marker says so. Adding when one is
-          # already there is a no-op at the API, so this is safe to repeat.
-          if [ -z "$MINE" ]; then
-            gh api -X POST "$THUMBS" -f content=+1 >/dev/null 2>&1 \
-              && echo "👍 -> $THUMBS" || echo "warning: could not add 👍 (non-fatal)"
-          else
-            echo "👍 already present"
-          fi
-        else
-          # Findings, a skip, or a failure — in every one of those a 👍 from an
-          # earlier head is now false.
-          for id in $MINE; do
-            gh api -X DELETE "$THUMBS/$id" >/dev/null 2>&1 \
-              && echo "withdrew 👍 -> $THUMBS/$id" || echo "warning: could not withdraw 👍 (non-fatal)"
-          done
-        fi
+        # POSTED UNCONDITIONALLY. Creating a reaction that already exists is a
+        # no-op at the API, so there is nothing to look up first — which also
+        # means the 👍 no longer depends on resolving our own login, and the
+        # custom-App identity gap is confined to clearing 👀.
+        gh api -X POST "repos/$REPO/issues/$PR_NUMBER/reactions" -f content=+1 >/dev/null 2>&1           && echo "👍 -> PR #$PR_NUMBER" || echo "warning: could not add 👍 (non-fatal)"
 
     - name: Clean up engine output
       if: always()

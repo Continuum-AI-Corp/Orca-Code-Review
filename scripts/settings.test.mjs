@@ -437,37 +437,19 @@ describe("action.yml wiring (settings, quiet mode)", () => {
     }
   });
 
-  test("the retired-label cleanup can never fail a review", () => {
-    // It is migration cleanup for a label an older version attached, so it must
-    // be strictly weaker than the review it runs beside: swallow the 404 that
-    // means "no such label" (the normal case), and carry continue-on-error so a
-    // permissions or API problem cannot turn a passing review into a red check.
-    // It also has to sit BEFORE the gate — the gate exits non-zero on a blocking
-    // finding, and a blocked PR is exactly the kind that was promoted.
-    const yml = actionYml();
-    const step = sliceStep(yml, "- name: Detach the retired tier label", "- name: Enforce severity gate");
-    assert.match(step, /continue-on-error: true/, "cleanup must not be able to fail the job");
-    assert.match(step, /removeLabel/, "it must detach rather than list-then-detach");
-    assert.match(step, /status !== 404/, "a missing label is the normal case, not an error");
-    assert.ok(
-      yml.indexOf("- name: Detach the retired tier label") < yml.indexOf("- name: Enforce severity gate"),
-      "the cleanup must run before the gate, or a blocked PR never gets cleaned",
-    );
-  });
-
   test("the summary step has no held branch: the ❌ count follows block-on, never fix-first", () => {
     // There is one review per push, so there is no run whose ❌ count should
     // follow fix_first instead of block_on. If a --held branch comes back, the
     // summary and the gate can disagree about what blocks the PR.
     const yml = actionYml();
-    const summary = sliceStep(yml, "- name: Summary (PR description)", "- name: Detach the retired tier label");
+    const summary = sliceStep(yml, "- name: Summary (PR description)", "- name: Enforce severity gate");
     assert.doesNotMatch(summary, /--held/, "the summary must not pass --held");
     assert.doesNotMatch(summary, /HELD/, "there is no held state to branch on");
   });
 
   test("the summary step passes the EFFECTIVE block-on set to summary-comment.mjs", () => {
     const yml = actionYml();
-    const summary = sliceStep(yml, "- name: Summary (PR description)", "- name: Detach the retired tier label");
+    const summary = sliceStep(yml, "- name: Summary (PR description)", "- name: Enforce severity gate");
     assert.match(summary, /--block-on/, "the ❌ count must follow the configured block-on set, not a hardcoded P0+P1");
     assert.match(summary, /steps\.settings\.outputs\.block_on/, "and it must be the settings-aware effective value");
   });
@@ -498,7 +480,7 @@ describe("action.yml wiring (settings, quiet mode)", () => {
 
   test("a resumed review retires the stale settings-skip and oversized-skip notices", () => {
     const yml = actionYml();
-    const summary = sliceStep(yml, "- name: Summary (PR description)", "- name: Detach the retired tier label");
+    const summary = sliceStep(yml, "- name: Summary (PR description)", "- name: Enforce severity gate");
     assert.match(summary, /orca-code-review-disabled/, "the 'auto review off' notice must be cleaned up");
     assert.match(summary, /orca-code-review-skip/, "the 'diff too large' notice must be cleaned up");
     assert.match(summary, /deleteComment/, "cleanup means deleting the stale comment");

@@ -58,7 +58,7 @@ jobs:
           # orcarouter-url: ${{ secrets.ORCAROUTER_URL }}
           # brand: "OrcaCode Review"
           # router: "orcarouter/code-review"  # router whose DSL picks the model
-          # fix-first: "P0,P1"   # ask for a concrete fix on these first
+          # fix-first: "P0,P1"   # exhaustive only: stop adding passes once one is found
           # block-on: "P0"       # fail the check (block merge) on these
           # max-diff-kb: "512"   # bigger diffs skip the review (outcome: on-oversized-diff)
           # max-diff-files: "300"  # same skip when the diff touches more files than this

@@ -197,7 +197,8 @@ in the file only wins if it differs from its documented default.
 **If the file is authoritative (`settings: "false"`)** — edit it. Ask with
 `AskUserQuestion` which knobs to change, offering only what is relevant:
 
-- Merge policy (`block-on`) and fix-first escalation (`fix-first`).
+- Merge policy (`block-on`), exhaustive early-stop (`fix-first`), and which severities post
+  inline (Report severities, dashboard-only).
 - Diff limits (`max-diff-kb`, `max-diff-files`) and `on-oversized-diff`.
 - Precision filter (`precision-filter`, `judge-model`, `judge-threshold`).
 - Run reporting (`report`) and token metering (`meter`).

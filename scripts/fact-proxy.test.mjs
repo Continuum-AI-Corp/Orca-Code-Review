@@ -1075,7 +1075,7 @@ describe("action.yml wiring (guardrail / firewall block comment)", () => {
 
   test("a resumed clean review retires the stale block comment", () => {
     const yml = actionYml();
-    const summary = sliceStep(yml, "- name: Summary (PR description)", "- name: Enforce severity gate");
+    const summary = sliceStep(yml, "- name: Summary (PR description)", "- name: Detach the retired tier label");
     assert.match(summary, /orca-code-review-block/, "the summary step must delete a stale block comment once reviews resume");
   });
 });

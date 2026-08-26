@@ -4,7 +4,7 @@
 
 Automatically review every pull request, post findings directly on the affected lines, and block serious issues from merging.
 
-**P0/P1 → ❌ Block** · **P2 → 💬 Comment** · **Clean → ✅ Pass**
+**P0/P1 → ❌ Block** · **Findings → 💬 Comment** · **Clean → ✅ Pass**
 
 ## How it works
 
@@ -23,7 +23,7 @@ Every push gets one review. Findings post on the affected lines, and P0/P1 block
 ### What you get
 
 * 🔍 Automatic review on every PR
-* 💬 Inline P0 / P1 / P2 findings
+* 💬 Inline findings on the affected lines
 * 🛑 Merge gate for serious issues
 * 🧠 Choose your own review model
 * 🎯 Precision filtering to reduce false positives
@@ -148,13 +148,24 @@ OrcaCode automatically reviews new PRs and pushes, posts findings inline, and re
 
 ## Severity
 
-| Severity | Meaning            | Result     |
-| -------- | ------------------ | ---------- |
-| **P0**   | Critical / blocker | ❌ Block    |
-| **P1**   | High severity      | ❌ Block    |
-| **P2**   | Advisory           | 💬 Comment |
+| Severity | Meaning              | Merge gate | Posted inline          |
+| -------- | -------------------- | ---------- | ---------------------- |
+| **P0**   | Critical / blocker   | ❌ Block    | Always                 |
+| **P1**   | High severity        | ❌ Block    | Always                 |
+| **P2**   | Advisory             | ✅ Pass     | Per Report severities  |
+| **P3**   | Nit / style          | ✅ Pass     | Per Report severities  |
 
-Customize the rubric and blocking policy from **OrcaRouter → Apps → OrcaCode Review**.
+Two independent settings, and the defaults above are the shipped ones:
+
+* **Merge policy** decides what blocks.
+* **Report severities** decides what gets posted on the diff.
+
+A severity that blocks is always posted, whatever Report severities says — a
+failing check with nothing on the diff explaining it is worse than a noisy one.
+Narrowing Report severities never changes the gate, and the PR summary always
+counts every finding, so a muted P2 still shows up there.
+
+Customize the rubric and both policies from **OrcaRouter → Apps → OrcaCode Review**.
 
 ---
 
@@ -165,6 +176,7 @@ Manage OrcaCode from **OrcaRouter → Apps → OrcaCode Review**:
 * **Model** — choose your reviewer
 * **Review mode** — every push, ready for review, or on demand
 * **Merge policy** — choose which severities block
+* **Report severities** — choose which severities post on the diff
 * **Exhaustive review** — run additional passes over the same diff
 * **Quiet mode** — keep P2 findings in the summary
 * **Custom rubric** — define your own review rules

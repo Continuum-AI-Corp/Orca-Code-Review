@@ -702,8 +702,9 @@ runs:
         # $RUNNER_TEMP is runner-controlled and reset per job.
         RESULT: ${{ runner.temp }}/result.json
         REVIEW_LOG: ${{ runner.temp }}/review.log
-        # Per-tier snapshots of $RESULT (which the escalation pass overwrites):
-        # the report steps below need each tier's own severity counts.
+        # An unfiltered snapshot of $RESULT for the run report: it has to carry
+        # what the review FOUND, and $RESULT itself is the input to the display
+        # chain (report_on then quiet) further down.
         RESULT_FINAL: ${{ runner.temp }}/result-final.json
         # Exhaustive-mode scratch: each extra engine pass lands in
         # $RESULT_EXTRA and is deduped into $RESULT via $RESULT_MERGED.
@@ -1347,6 +1348,45 @@ runs:
           const newBody = injectSummary(pr.body, summaryMd);
           if (newBody !== (pr.body || '')) {
             await github.rest.pulls.update({ ...repo, pull_number: num, body: newBody });
+          }
+
+    # MIGRATION CLEANUP, and deletable once no open PR predates the single-tier
+    # release. An older version created the repository label `orca-review:strong`
+    # and attached it to a PR the moment it was promoted, to carry the tier
+    # between runs. Nothing reads or writes it now, so a PR promoted before the
+    # upgrade keeps a label asserting it sits in a tier that no longer exists —
+    # state this action created and would otherwise abandon on the user's PR.
+    #
+    # BLIND remove, not list-then-remove. Reading the labels is the paginated
+    # call the single-tier change deleted, and paying it on every run to find out
+    # whether a migration artifact is present costs more than the removal it
+    # guards. A 404 means the label was never there, which is the normal case.
+    #
+    # Placed BEFORE the gate on purpose: the gate exits non-zero on a blocking
+    # finding, and a blocked PR is exactly the kind that was promoted.
+    - name: Detach the retired tier label
+      if: steps.settings.outputs.decision != 'skip' && steps.guard.outputs.decision != 'skip'
+      continue-on-error: true
+      uses: actions/github-script@v7
+      env:
+        PR_NUMBER: ${{ steps.pr.outputs.number }}
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const num = Number(process.env.PR_NUMBER);
+          if (!Number.isInteger(num) || num <= 0) return;
+          try {
+            await github.rest.issues.removeLabel({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: num,
+              name: 'orca-review:strong',
+            });
+            core.info('Removed the retired orca-review:strong label.');
+          } catch (e) {
+            // 404: no such label on this PR (or not in the repo at all) — the
+            // normal case for anything opened after the upgrade.
+            if (e.status !== 404) throw e;
           }
 
     - name: Enforce severity gate

@@ -37,13 +37,13 @@
 // verdict itself always comes from --gate, which the driver computes with the
 // same configuration.
 //
-// HELD runs are the exception: when the cheap tier withheld the strong review
-// because a FIX-FIRST finding is present, the driver passes `--held`
-// `--fix-first <set>`. The block-on set may not include those severities (a
-// repo can even set block_on=""), so counting over block-on would render a
-// self-contradictory "❌ 0 findings block merge" next to the "held" tier line.
-// Under --held the ❌ count is taken over the fix-first set instead, so it
-// agrees with the held tier line and the ❌ verdict. Non-held is unchanged.
+// ALWAYS over block-on, with no exception. There used to be one: a held run —
+// a cheap pass withholding the strong review over a fix-first finding — counted
+// over the fix-first set instead, because block-on need not contain those
+// severities and "❌ 0 findings block merge" beside a "held" tier line
+// contradicts itself. There is no held run and no tier line now, so the count
+// and the gate read the same set, which is the property that matters: the
+// summary cannot claim something the merge gate does not enforce.
 
 import fs from "node:fs";
 import { SEVERITIES, countSeverities } from "./severity.mjs";

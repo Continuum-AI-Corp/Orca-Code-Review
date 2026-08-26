@@ -23,7 +23,7 @@ answering a question about behavior — do not guess a default.
 
 | Input | Default | What it does |
 | --- | --- | --- |
-| `fix-first` | `P0,P1` | Severities that withhold the strong tier until fixed at the cheap tier. |
+| `fix-first` | `P0,P1` | Severities that stop an exhaustive review early — that finding is what to fix first. No effect unless `exhaustive` is on, and it never changes what the reviewer is asked to look for. |
 | `block-on` | `P0,P1` | Severities that fail the check and block the merge. `""` means never block. |
 
 Values are `P0`, `P1`, `P2`, comma-separated, case-insensitive. An explicit
@@ -99,7 +99,7 @@ and only apply when `settings` is `true`.
 | --- | --- | --- |
 | `auto_review` | on / off | Master switch for automatic reviews. |
 | `trigger` | `every_push`, `ready_for_review`, `on_demand` | When an automatic review fires. `ready_for_review` skips drafts. |
-| `exhaustive` | on / off | Extra engine passes on the strong tier, deduped. Costs more. |
+| `exhaustive` | on / off | Extra engine passes over the same diff, deduped. Costs more. |
 | `quiet` | on / off | Mutes P2 at posting time. The gate and the run report still see true counts. |
 | `rubric` | free text | Server-side rubric override for the review prompt. |
 | Models | per tier | Which model runs each tier. The action never names a model. |

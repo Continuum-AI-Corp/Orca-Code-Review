@@ -47,7 +47,7 @@ inputs:
     required: false
     default: "https://api.orcarouter.ai/v1/chat/completions"
   github-token:
-    description: "Token used to fetch the PR head, post review comments, and manage the tier label."
+    description: "Token used to fetch the PR head, post review comments, and react to a /orcacode-review command."
     required: false
     default: ${{ github.token }}
   brand:

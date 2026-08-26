@@ -14,7 +14,7 @@ answering a question about behavior — do not guess a default.
 | Input | Default | What it does |
 | --- | --- | --- |
 | `orcarouter-url` | `https://api.orcarouter.ai/v1/chat/completions` | Chat-completions endpoint. Change only for a self-hosted gateway. |
-| `github-token` | `${{ github.token }}` | Fetches the PR head, posts comments, manages the tier label. |
+| `github-token` | `${{ github.token }}` | Fetches the PR head, posts review comments, and reacts to a `/orcacode-review` command. |
 | `brand` | `OrcaCode Review` | Name shown on PR comments. |
 | `router` | `orcarouter/code-review` | Router alias that owns model selection. The action names no models: it injects raw facts (`x-cr-prev-tier`, `x-cr-prev-p0p1`) and this router's DSL recipe maps them to a concrete model. |
 | `engine-version` | `1.3.13` | Pinned `@alibaba-group/open-code-review` version. Bump deliberately — later steps parse its JSON output shape. |
@@ -74,7 +74,7 @@ an error keeps the prior stage's findings and never aborts the review.
 | Input | Default | What it does |
 | --- | --- | --- |
 | `settings` | `true` | Fetch per-repo settings from the OrcaRouter dashboard at the start of each run. `false` skips the fetch and makes the workflow file authoritative. |
-| `report` | `true` | Send a per-run summary — repo, PR number, head SHA, tier, P0/P1/P2 counts, gate result, engine version. **Never code or finding text.** |
+| `report` | `true` | Send a per-run summary — repo, PR number, head SHA, tier, P0/P1/P2 counts, gate result, engine version. `tier` is always `standard` since the cascade was retired; the field is kept so the payload shape does not churn. **Never code or finding text.** |
 | `meter` | `true` | Record per-call token accounting and print a totals table in the job log. Local only; nothing is uploaded. |
 
 ### Precedence between the dashboard and this file
@@ -102,4 +102,4 @@ and only apply when `settings` is `true`.
 | `exhaustive` | on / off | Extra engine passes over the same diff, deduped. Costs more. |
 | `quiet` | on / off | Mutes P2 at posting time. The gate and the run report still see true counts. |
 | `rubric` | free text | Server-side rubric override for the review prompt. |
-| Models | per tier | Which model runs each tier. The action never names a model. |
+| Model | one | Which model runs the review. The action never names a model — the router resolves it. |

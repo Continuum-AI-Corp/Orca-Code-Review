@@ -279,6 +279,19 @@ runs:
         EVENT_NAME: ${{ github.event_name }}
         COMMENT_ID: ${{ github.event.comment.id }}
       run: |
+        # THE SAME GATE AS THE CLEAR, and its absence here was a regression the
+        # last round introduced: gating only the removal left a PAT-backed run
+        # POSTing 👀 and never taking it off, which is worse than the state
+        # before any of this. Declining is only coherent if it covers both ends.
+        #
+        # Checked once here rather than inside react(), so a token that cannot be
+        # identified costs one API call, not two.
+        ME_TYPE=$(gh api user --jq .type 2>/dev/null || echo "Bot")
+        if [ "$ME_TYPE" != "Bot" ]; then
+          echo "github-token belongs to a user, not an app; not reacting"
+          exit 0
+        fi
+
         # JUST REACT. This used to record the id the POST returned so the clear
         # step could delete exactly it — first unconditionally, then only on a
         # 201 — and each version needed a JSON parse that node is not yet
@@ -1552,6 +1565,7 @@ runs:
         GH_TOKEN: ${{ inputs.github-token }}
         REPO: ${{ github.repository }}
         PR_NUMBER: ${{ steps.pr.outputs.number }}
+        HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
         EVENT_NAME: ${{ github.event_name }}
         COMMENT_ID: ${{ github.event.comment.id }}
       run: |
@@ -1604,6 +1618,25 @@ runs:
         MINE=$(gh api "$THUMBS" --paginate \
           --jq '.[] | select(.content=="+1") | select(.user.login=="'"$ME"'") | .id' \
           2>/dev/null || true)
+        # ONLY IF THIS RUN STILL DESCRIBES THE PR. Nothing serialises invocations,
+        # so an older clean run can finish AFTER a newer findings/skipped/failed
+        # run has withdrawn the thumb — and its local marker would put it back,
+        # endorsing a head that run never saw.
+        #
+        # Withdrawal needs no such check and deliberately does not have one: a
+        # thumb removed by a stale run is re-added by the current one on its own
+        # completion, so the failure direction is a moment without a 👍 rather
+        # than a 👍 over unreviewed code.
+        # AN UNCONFIRMED HEAD COUNTS AS MOVED. Adding on a failed lookup would
+        # contradict the rule this check exists for — the thumb must not endorse
+        # a head this run did not review, and "could not tell" is not evidence
+        # that it did. A clean run that loses the race or the API call simply
+        # goes without, and the next run puts it back.
+        CURRENT_SHA=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq .head.sha 2>/dev/null || echo "")
+        if [ -f "$RUNNER_TEMP/cr-clean" ] && [ "$CURRENT_SHA" != "$HEAD_SHA" ]; then
+          echo "cannot confirm this run still describes the PR head (${HEAD_SHA} vs ${CURRENT_SHA:-unknown}); leaving 👍 alone"
+          exit 0
+        fi
         if [ -f "$RUNNER_TEMP/cr-clean" ]; then
           # Clean, and only this run's own marker says so. Adding when one is
           # already there is a no-op at the API, so this is safe to repeat.

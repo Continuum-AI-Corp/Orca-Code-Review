@@ -253,3 +253,58 @@ test("the double-install conflict is documented in both places", () => {
   );
   assert.match(trouble, /two sets of comments/i);
 });
+
+// ------------------------------------------- the two workflow copies agree ---
+
+// `workflows/orca-code-review.yml` (the repo's example) and the skill's
+// `assets/workflow.yml` (the one written into a user's repo) are the same file
+// with different prose. When #28 retired the review cascade it updated the
+// example and missed the skill's copy, so every new install kept getting a
+// `permissions:` comment describing a tier label that no longer exists.
+//
+// Comments drift silently. The machine-readable parts must not.
+
+const readYaml = (rel) => fs.readFileSync(new URL(rel, import.meta.url), "utf8");
+const EXAMPLE = readYaml("../workflows/orca-code-review.yml");
+const TEMPLATE = readYaml("../skills/setup-orca-code-review/assets/workflow.yml");
+
+// Strips comments and blank lines, leaving only what GitHub actually reads.
+const effective = (yaml) =>
+  yaml
+    .split("\n")
+    .map((l) => l.replace(/\s+#.*$/, "").trimEnd())
+    .filter((l) => l.trim() && !l.trim().startsWith("#"))
+    .join("\n");
+
+const section = (yaml, key) => {
+  const lines = effective(yaml).split("\n");
+  const start = lines.findIndex((l) => l === `${key}:`);
+  if (start === -1) return null;
+  const rest = lines.slice(start + 1);
+  const end = rest.findIndex((l) => /^\S/.test(l));
+  return [lines[start], ...(end === -1 ? rest : rest.slice(0, end))].join("\n");
+};
+
+for (const key of ["permissions", "on", "concurrency"]) {
+  test(`the example workflow and the skill template agree on \`${key}:\``, () => {
+    const a = section(EXAMPLE, key);
+    const b = section(TEMPLATE, key);
+    assert.ok(a, `example has no ${key}: block`);
+    assert.equal(b, a, `the skill template's ${key}: block has drifted from the example`);
+  });
+}
+
+test("neither workflow copy mentions a tier label that no longer exists", () => {
+  // There is no add/remove-label step in action.yml. `issues: write` is still
+  // required — for PR comments and the /orcacode-review reaction — so the
+  // permission stays and only its justification was wrong.
+  for (const [name, yaml] of [["example", EXAMPLE], ["skill template", TEMPLATE]]) {
+    assert.doesNotMatch(yaml, /tier state label|tier label/, `${name} still documents the tier label`);
+    assert.match(yaml, /issues: write/, `${name} dropped issues: write, which is still needed`);
+  }
+});
+
+test("the action no longer claims its token manages a tier label", () => {
+  const action = fs.readFileSync(new URL("../action.yml", import.meta.url), "utf8");
+  assert.doesNotMatch(action, /manage the tier label/);
+});

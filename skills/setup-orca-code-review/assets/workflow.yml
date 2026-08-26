@@ -22,7 +22,7 @@ on:
 permissions:
   contents: read
   pull-requests: write
-  issues: write # tier state label + clean/fallback PR comments
+  issues: write # clean/fallback PR comments
 
 jobs:
   review:

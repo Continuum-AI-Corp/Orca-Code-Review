@@ -1,6 +1,6 @@
 {
   "name": "@orcarouter/code-review",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "description": "One-command installer for OrcaCode Review — AI pull-request review powered by OrcaRouter.",
   "bin": {
     "orcacode-review": "bin/orcacode-review.mjs"

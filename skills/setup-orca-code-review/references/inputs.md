@@ -16,7 +16,7 @@ answering a question about behavior — do not guess a default.
 | `orcarouter-url` | `https://api.orcarouter.ai/v1/chat/completions` | Chat-completions endpoint. Change only for a self-hosted gateway. |
 | `github-token` | `${{ github.token }}` | Fetches the PR head, posts comments, manages the tier label. |
 | `brand` | `OrcaCode Review` | Name shown on PR comments. |
-| `router` | `orcarouter/code-review` | Router alias that owns model selection. The action names no models: it injects raw facts (`x-cr-prev-tier`, `x-cr-prev-p0p1`) and this router's DSL recipe maps them to a concrete model. |
+| `router` | `orcarouter/orcacode-review` | Router alias that owns model selection. The action names no models: it injects raw facts (`x-cr-prev-tier`, `x-cr-prev-p0p1`) and this router's DSL recipe maps them to a concrete model. |
 | `engine-version` | `1.3.13` | Pinned `@alibaba-group/open-code-review` version. Bump deliberately — later steps parse its JSON output shape. |
 
 ## Severity and merge gate

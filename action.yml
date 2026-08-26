@@ -10,7 +10,7 @@
 # (x-cr-prev-tier / x-cr-prev-p0p1) and never names a model; OCR cannot send
 # custom headers, so an in-job loopback proxy (scripts/fact-proxy.mjs) stamps
 # those facts onto its requests and the workspace router's DSL recipe
-# (recipes/code-review.dsl.yaml) turns them into a concrete model. Changing which
+# (recipes/orcacode-review.dsl.yaml) turns them into a concrete model. Changing which
 # model reviews your code is therefore a recipe edit in your own workspace, with
 # no Action version to bump.
 #
@@ -59,9 +59,9 @@ inputs:
       OrcaRouter router alias (orcarouter/<name>) that owns model selection.
       The action names no models: it injects raw facts (x-cr-prev-tier /
       x-cr-prev-p0p1) as headers and this router's DSL recipe turns them into a
-      concrete model. See recipes/code-review.dsl.yaml.
+      concrete model. See recipes/orcacode-review.dsl.yaml.
     required: false
-    default: "orcarouter/code-review"
+    default: "orcarouter/orcacode-review"
   fix-first:
     description: >-
       Severities that stop an exhaustive review early: once a pass has found

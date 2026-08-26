@@ -5,10 +5,17 @@
 # only injects raw facts as headers and this recipe decides which model runs.
 #
 # THE ROUTER WAS RENAMED. It used to be `code-review`; setup renames an existing one
-# and provisions new workspaces under the new name, and the gateway addresses it by
-# the current name only — there is no legacy fallback at resolution time. If a review
-# fails with `model router 'code-review' not found`, that workspace still holds the
-# old name: run setup again, which renames it.
+# and provisions new workspaces under the new name. The error names the alias that was
+# REQUESTED, not the one the workspace holds, so the two failures mean opposite things:
+#
+#   model router 'orcacode-review' not found
+#     The caller asked for the new name and this workspace is still on the old one.
+#     Run setup, which renames it.
+#
+#   model router 'code-review' not found
+#     Something is still explicitly asking for the OLD name after the rename — a
+#     `router:` input in the workflow, or a recipe pasted into a router of that name.
+#     Setup will not help; drop the override.
 #
 # MIGRATION — this recipe lives in YOUR OrcaRouter workspace, not in the Action, so
 # bumping the Action version does NOT update it. An install still running an older

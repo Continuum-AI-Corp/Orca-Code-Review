@@ -308,3 +308,45 @@ test("the action no longer claims its token manages a tier label", () => {
   const action = fs.readFileSync(new URL("../action.yml", import.meta.url), "utf8");
   assert.doesNotMatch(action, /manage the tier label/);
 });
+
+// --------------------------------------------------- help matches behaviour ---
+
+test("the help marks whichever command a bare invocation actually runs", () => {
+  // This drifted once already: the default became `skill` in 1.2.0 while
+  // --help kept calling `init` the default for two releases. Nothing connected
+  // the sentence to the routing, so nothing complained.
+  const src = fs.readFileSync(CLI, "utf8");
+  const fallback = /const cmd = argv\._\[0\] \?\? "(\w+)"/.exec(src);
+  assert.ok(fallback, "could not find the bare-command fallback in main()");
+  const defaultCmd = fallback[1];
+
+  for (const lang of ["en", "zh"]) {
+    const help = spawnSync(process.execPath, [CLI, "--help", "--lang", lang], { encoding: "utf8" }).stdout;
+
+    // Only the Commands block. The Options block also says "default" — the
+    // --lang row explains its own default — and counting it here would make
+    // this test fail for a reason that has nothing to do with routing.
+    const lines = help.split("\n");
+    const start = lines.findIndex((l) => /^(Commands|命令)$/.test(l.trim()));
+    const end = lines.findIndex((l, i) => i > start && /^(Options|参数)$/.test(l.trim()));
+    assert.ok(start !== -1 && end !== -1, `${lang}: could not locate the Commands block`);
+
+    const commandLines = lines.slice(start + 1, end).filter((l) => /^ {2}\S/.test(l));
+    assert.ok(commandLines.length > 0, `${lang}: Commands block is empty`);
+    const marked = commandLines.filter((l) => /\bdefault\b|默认/.test(l));
+
+    assert.equal(marked.length, 1, `${lang}: ${marked.length} commands claim to be the default`);
+    assert.ok(
+      marked[0].trim().startsWith(defaultCmd),
+      `${lang}: help marks "${marked[0].trim().split(/\s{2,}/)[0]}" but the code runs "${defaultCmd}"`,
+    );
+  }
+});
+
+test("the help shows the scoped package name users actually type", () => {
+  // `npx orcacode-review` is the old unscoped name and no longer resolves.
+  const help = spawnSync(process.execPath, [CLI, "--help"], { encoding: "utf8" }).stdout;
+  for (const invocation of help.match(/npx \S+/g) ?? []) {
+    assert.equal(invocation, `npx ${PKG.name}`, `stale invocation in --help: ${invocation}`);
+  }
+});

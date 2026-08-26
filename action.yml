@@ -278,21 +278,26 @@ runs:
         EVENT_NAME: ${{ github.event_name }}
         COMMENT_ID: ${{ github.event.comment.id }}
       run: |
-        # THE ID THIS RUN CREATED, recorded so the clear step can delete exactly
-        # it. Matching on the token's identity instead was wrong twice over: with
-        # a PAT it selects the maintainer's OWN 👀, including one they added by
-        # hand before the workflow ran, and with two overlapping runs each would
-        # clear the other's acknowledgement while its review was still going.
+        # ONLY WHAT THIS RUN CREATED, decided by the status code. The POST is
+        # idempotent per (user, content): where a reaction already exists GitHub
+        # answers 200 with the EXISTING id, and only a fresh one is 201. An
+        # earlier version recorded either, which meant a maintainer who had
+        # already put 👀 on the PR — with their PAT as github-token — had it
+        # adopted and then deleted by a run that never placed it.
         #
-        # POST is idempotent per (user, content): reacting when one is already
-        # there returns the EXISTING id rather than creating a second, so a
-        # re-run records the id it will legitimately own.
+        # 201 also excludes the overlapping-run case: the second run gets 200 for
+        # the first run's reaction and records nothing, so it cannot clear an
+        # acknowledgement that still has a review behind it.
         : > "$RUNNER_TEMP/cr-eyes.ids"
         react() {
-          id=$(gh api -X POST "$1" -f content=eyes --jq .id 2>/dev/null || true)
-          if [ -n "$id" ]; then
+          out=$(gh api -i -X POST "$1" -f content=eyes 2>/dev/null || true)
+          code=$(printf '%s' "$out" | head -1 | tr -d '\r' | awk '{print $2}')
+          id=$(printf '%s' "$out" | sed -n 's/.*"id": *\([0-9][0-9]*\).*/\1/p' | head -1)
+          if [ "$code" = "201" ] && [ -n "$id" ]; then
             echo "$1 $id" >> "$RUNNER_TEMP/cr-eyes.ids"
             echo "reacted 👀 -> $1 (id $id)"
+          elif [ -n "$code" ]; then
+            echo "👀 already present at $1 (HTTP $code); not adopting it"
           else
             echo "warning: failed to react at $1 (non-fatal)"
           fi
@@ -1173,6 +1178,12 @@ runs:
         HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
         # The quiet-filtered copy — see the "Quiet mode filter" step above.
         RESULT: ${{ runner.temp }}/result-posted.json
+        # PRE-QUIET, for the one question quiet must not answer: did this review
+        # FIND anything? Quiet decides what is posted; a run whose P2s it muted
+        # has still found them, and the summary says so. Reading the posted file
+        # to declare a run clean put "No findings" and a 👍 on a pull request
+        # whose own summary listed the findings three lines above.
+        RESULT_FOUND: ${{ runner.temp }}/result-reported.json
       with:
         github-token: ${{ inputs.github-token }}
         script: |
@@ -1197,52 +1208,33 @@ runs:
             `\n\n<sub>[OrcaCode Review](https://www.orcarouter.ai/code-review) — ` +
             `Route Smarter. Ship Safer. Spend Less.</sub>`;
 
-          // THE 👍 IS THE PR-LEVEL ANSWER, and it is settled on every run rather
-          // than only placed. GitHub reactions have no update — add and remove
-          // are all there is — so a marker that is only ever added drifts: a head
-          // that was clean keeps its thumb after a later push breaks something,
-          // and the one question it exists to answer stops being answerable.
-          //
-          // OURS BY LOGIN, not by "is a bot". Filtering on user.type === 'Bot'
-          // was the first version and it is wrong in a way that only shows up
-          // where it matters: a repository reviewed by BOTH this Action and the
-          // hosted App has two bots reacting, and that filter would have had
-          // each one deleting the other's 👍 on every run. The endpoint deletes
-          // by id, so the identity has to be exact.
-          //
-          // getAuthenticated() answers for a PAT or an App token; the default
-          // GITHUB_TOKEN is an installation token and 401s there, and its
-          // reactions carry `github-actions[bot]`. So: ask, else assume the
-          // default — never widen to "any bot".
-          //
-          // Best-effort: a reaction is worth no failed run, and the review body
-          // below is the authoritative statement either way.
-          let meLogin = 'github-actions[bot]';
-          try {
-            meLogin = (await github.rest.users.getAuthenticated()).data.login;
-          } catch (e) {
-            // Expected on the default token.
-          }
-          const settleThumb = async (clean) => {
+          // THE THUMB IS NOT SETTLED HERE. This step is one of several ways a run
+          // ends — settings skip, oversized diff, a guardrail block, an engine
+          // failure, a rejected post — and a marker only this step maintains is
+          // one the other endings leave stale, endorsing a head nobody reviewed.
+          // It is settled in the always() step near the end of this file, which
+          // sees every ending. All this step does is record what it concluded.
+          const markClean = () => {
             try {
-              const mine = (await github.paginate(github.rest.reactions.listForIssue, {
-                ...repo, issue_number: num, per_page: 100,
-              })).filter((r) => r.content === '+1' && r.user && r.user.login === meLogin);
-              if (clean) {
-                if (mine.length === 0) {
-                  await github.rest.reactions.createForIssue({ ...repo, issue_number: num, content: '+1' });
-                }
-              } else {
-                for (const r of mine) {
-                  await github.rest.reactions.deleteForIssue({ ...repo, issue_number: num, reaction_id: r.id });
-                }
-              }
+              fs.writeFileSync(process.env.RUNNER_TEMP + '/cr-clean', '1');
             } catch (e) {
-              console.log('reaction not settled (non-fatal):', e.message);
+              console.log('could not record the clean verdict (non-fatal):', e.message);
             }
           };
 
-          if (comments.length === 0) {
+          // DID THE REVIEW FIND ANYTHING — not "is there anything left to post".
+          // `comments` is the quiet-filtered list, so a quiet workspace whose
+          // findings were all P2 arrives here empty while its summary reports
+          // them. Declaring that clean contradicts the summary on the same PR.
+          let foundCount = comments.length;
+          try {
+            const found = JSON.parse(fs.readFileSync(process.env.RESULT_FOUND, 'utf8'));
+            foundCount = (found.comments || []).length;
+          } catch (e) {
+            // Unreadable: fall back to what we can see rather than guess clean.
+          }
+
+          if (foundCount === 0) {
             // A CLEAN RUN SAYS SO. This used to return silently and leave the
             // pinned summary to report it — but the summary sits in the PR
             // description, folded and above the fold only if you scroll, so a
@@ -1254,7 +1246,7 @@ runs:
             // Still one timeline entry per push, which was the original worry.
             // That is what the 👍 is for: the entry states the result once, and
             // the reaction is the at-a-glance version that updates in place.
-            await settleThumb(true);
+            markClean();
             const cleanBody =
               `## 🐳 ${brand}\n\n` +
               `✅ **No findings** — nothing to flag in this PR. Great work!`;
@@ -1271,8 +1263,6 @@ runs:
             }
             return;
           }
-          // Findings exist, so any 👍 from an earlier head is now false.
-          await settleThumb(false);
 
           // Severity from the LEADING [P0]/[P1]/[P2]/[P3] tag only (mirrors gate.mjs);
           // a later mention must not override the missing-tag P1 fail-safe.
@@ -1538,7 +1528,7 @@ runs:
     # Best-effort throughout: `|| true` on the deletes and no `set -e`
     # dependency, because failing a run over a leftover emoji would trade a
     # cosmetic problem for a real one.
-    - name: Clear the 👀 acknowledgement
+    - name: Settle the review reactions
       if: always()
       shell: bash
       env:
@@ -1552,7 +1542,11 @@ runs:
         # by-identity match deletes a maintainer's own 👀 under a PAT, and lets
         # concurrent runs clear each other.
         IDS="$RUNNER_TEMP/cr-eyes.ids"
-        [ -s "$IDS" ] || { echo "no 👀 recorded by this run; nothing to clear"; exit 0; }
+        # NOT AN EARLY EXIT. Recording no 👀 is ordinary — the reaction was
+        # already there, or the POST failed — and the thumb below still has to be
+        # settled. An `exit 0` here is what would leave a stale 👍 on exactly the
+        # runs that never got to acknowledge themselves.
+        [ -s "$IDS" ] || : > "$IDS"
         while read -r endpoint id; do
           [ -n "$endpoint" ] && [ -n "$id" ] || continue
           if gh api -X DELETE "$endpoint/$id" >/dev/null 2>&1; then
@@ -1561,6 +1555,51 @@ runs:
             echo "warning: could not clear 👀 at $endpoint/$id (non-fatal)"
           fi
         done < "$IDS"
+
+        # ------------------------------------------------------------------
+        # THE 👍, SETTLED WHERE EVERY ENDING IS VISIBLE.
+        #
+        # It used to be added inside the posting step, which is one ending out of
+        # several: a settings skip, an oversized diff, a guardrail block, an
+        # engine failure or a rejected post all finish without going near it. A
+        # thumb only that step maintains is one every other ending leaves in
+        # place, endorsing a head nobody reviewed. This step runs on always().
+        #
+        # DECLINED UNDER A PAT, and that is the point rather than a limitation.
+        # GitHub has no way to ask "which reaction did I create" after the fact,
+        # so the only handle is the author — and when github-token is a
+        # maintainer's PAT, their manual 👍 and ours are the same author. Two
+        # rounds of review went into narrowing that predicate; the honest answer
+        # at the boundary is to leave reactions alone rather than to guess and
+        # delete somebody's approval. The review body and the summary still say
+        # everything the thumb would have.
+        ME_TYPE=$(gh api user --jq .type 2>/dev/null || echo "Bot")
+        if [ "$ME_TYPE" != "Bot" ]; then
+          echo "github-token belongs to a user, not an app; leaving 👍 alone"
+          exit 0
+        fi
+        ME=$(gh api user --jq .login 2>/dev/null || echo "github-actions[bot]")
+        THUMBS="repos/$REPO/issues/$PR_NUMBER/reactions"
+        MINE=$(gh api "$THUMBS" --paginate \
+          --jq '.[] | select(.content=="+1") | select(.user.login=="'"$ME"'") | .id' \
+          2>/dev/null || true)
+        if [ -f "$RUNNER_TEMP/cr-clean" ]; then
+          # Clean, and only this run's own marker says so. Adding when one is
+          # already there is a no-op at the API, so this is safe to repeat.
+          if [ -z "$MINE" ]; then
+            gh api -X POST "$THUMBS" -f content=+1 >/dev/null 2>&1 \
+              && echo "👍 -> $THUMBS" || echo "warning: could not add 👍 (non-fatal)"
+          else
+            echo "👍 already present"
+          fi
+        else
+          # Findings, a skip, or a failure — in every one of those a 👍 from an
+          # earlier head is now false.
+          for id in $MINE; do
+            gh api -X DELETE "$THUMBS/$id" >/dev/null 2>&1 \
+              && echo "withdrew 👍 -> $THUMBS/$id" || echo "warning: could not withdraw 👍 (non-fatal)"
+          done
+        fi
 
     - name: Clean up engine output
       if: always()

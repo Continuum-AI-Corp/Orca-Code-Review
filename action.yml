@@ -217,6 +217,7 @@ runs:
           "$RUNNER_TEMP/policy-block.json" \
           "$RUNNER_TEMP/pr.diff" "$RUNNER_TEMP/diff-guard.json" "$RUNNER_TEMP/prev-summary.md" \
           "$RUNNER_TEMP/wallclock-timeout" "$RUNNER_TEMP/cr-usage.jsonl" \
+          "$RUNNER_TEMP/cr-clean" \
           "$RUNNER_TEMP/result.l1.json" "$RUNNER_TEMP/result.l2.json" \
           "$RUNNER_TEMP/result-extra.l1.json" "$RUNNER_TEMP/result-extra.l2.json"
 
@@ -278,26 +279,25 @@ runs:
         EVENT_NAME: ${{ github.event_name }}
         COMMENT_ID: ${{ github.event.comment.id }}
       run: |
-        # ONLY WHAT THIS RUN CREATED, decided by the status code. The POST is
-        # idempotent per (user, content): where a reaction already exists GitHub
-        # answers 200 with the EXISTING id, and only a fresh one is 201. An
-        # earlier version recorded either, which meant a maintainer who had
-        # already put 👀 on the PR — with their PAT as github-token — had it
-        # adopted and then deleted by a run that never placed it.
+        # JUST REACT. This used to record the id the POST returned so the clear
+        # step could delete exactly it — first unconditionally, then only on a
+        # 201 — and each version needed a JSON parse that node is not yet
+        # available for at this point in the job. The last one was a greedy
+        # expression that picked the nested author id out of a compact response,
+        # so the DELETE would have targeted the wrong resource.
         #
-        # 201 also excludes the overlapping-run case: the second run gets 200 for
-        # the first run's reaction and records nothing, so it cannot clear an
-        # acknowledgement that still has a review behind it.
-        : > "$RUNNER_TEMP/cr-eyes.ids"
+        # The id existed to tell OUR reaction from the token owner's. That
+        # question is settled once, in the settle step, by declining to manage
+        # reactions at all when github-token is a user rather than an app — so
+        # there is nothing here to record, and nothing to parse.
+        #
+        # Two concurrent runs as the same app share one reaction, so the first to
+        # finish clears it while the second is still working. Accepted: a missing
+        # 👀 for a few minutes is cosmetic, and every mechanism that avoided it
+        # cost more correctness elsewhere than it bought.
         react() {
-          out=$(gh api -i -X POST "$1" -f content=eyes 2>/dev/null || true)
-          code=$(printf '%s' "$out" | head -1 | tr -d '\r' | awk '{print $2}')
-          id=$(printf '%s' "$out" | sed -n 's/.*"id": *\([0-9][0-9]*\).*/\1/p' | head -1)
-          if [ "$code" = "201" ] && [ -n "$id" ]; then
-            echo "$1 $id" >> "$RUNNER_TEMP/cr-eyes.ids"
-            echo "reacted 👀 -> $1 (id $id)"
-          elif [ -n "$code" ]; then
-            echo "👀 already present at $1 (HTTP $code); not adopting it"
+          if gh api -X POST "$1" -f content=eyes >/dev/null 2>&1; then
+            echo "reacted 👀 -> $1"
           else
             echo "warning: failed to react at $1 (non-fatal)"
           fi
@@ -1234,6 +1234,18 @@ runs:
             // Unreadable: fall back to what we can see rather than guess clean.
           }
 
+          // MUTED IS NOT CLEAN, AND IT IS NOT A REVIEW EITHER. Quiet drops every
+          // reported P2, so a run can have found things and still have nothing
+          // to post. Falling through built a review from an empty array —
+          // "Found **0** issues in this PR: ." — beside a description summary
+          // that listed the muted findings. Quiet's own promise is silence, so
+          // this posts nothing AND records no clean verdict: the run is not
+          // clean, it is quiet.
+          if (foundCount > 0 && comments.length === 0) {
+            console.log('quiet mode muted every finding; posting nothing');
+            return;
+          }
+
           if (foundCount === 0) {
             // A CLEAN RUN SAYS SO. This used to return silently and leave the
             // pinned summary to report it — but the summary sits in the PR
@@ -1246,7 +1258,6 @@ runs:
             // Still one timeline entry per push, which was the original worry.
             // That is what the 👍 is for: the entry states the result once, and
             // the reaction is the at-a-glance version that updates in place.
-            markClean();
             const cleanBody =
               `## 🐳 ${brand}\n\n` +
               `✅ **No findings** — nothing to flag in this PR. Great work!`;
@@ -1261,6 +1272,12 @@ runs:
                 ...repo, issue_number: num, body: cleanBody + footer,
               });
             }
+            // AFTER ONE OF THEM SUCCEEDED. Written first, a run whose review AND
+            // its comment fallback both failed still told the always() step it
+            // was clean — so the 👍 endorsed a verdict that was never published.
+            // A throw from the fallback skips this and the thumb is withdrawn,
+            // which is the right answer for a run that could not say anything.
+            markClean();
             return;
           }
 
@@ -1538,23 +1555,41 @@ runs:
         EVENT_NAME: ${{ github.event_name }}
         COMMENT_ID: ${{ github.event.comment.id }}
       run: |
-        # ONLY WHAT THIS RUN RECORDED. See the note beside the react step: a
-        # by-identity match deletes a maintainer's own 👀 under a PAT, and lets
-        # concurrent runs clear each other.
-        IDS="$RUNNER_TEMP/cr-eyes.ids"
-        # NOT AN EARLY EXIT. Recording no 👀 is ordinary — the reaction was
-        # already there, or the POST failed — and the thumb below still has to be
-        # settled. An `exit 0` here is what would leave a stale 👍 on exactly the
-        # runs that never got to acknowledge themselves.
-        [ -s "$IDS" ] || : > "$IDS"
-        while read -r endpoint id; do
-          [ -n "$endpoint" ] && [ -n "$id" ] || continue
-          if gh api -X DELETE "$endpoint/$id" >/dev/null 2>&1; then
-            echo "cleared 👀 -> $endpoint/$id"
-          else
-            echo "warning: could not clear 👀 at $endpoint/$id (non-fatal)"
-          fi
-        done < "$IDS"
+        # ONE GATE FOR BOTH REACTIONS: is this token an app?
+        #
+        # GitHub cannot be asked "which reaction did I create" after the fact, so
+        # the only handle is the author — and when github-token is a maintainer's
+        # PAT, their manual 👀 or 👍 and ours have the same author. Three rounds
+        # of review went into narrowing that predicate with recorded ids and
+        # status codes; every version needed a parse, and the parses were where
+        # the bugs were. Declining at the boundary removes the question instead
+        # of answering it more precisely each time.
+        #
+        # The review body and the summary say everything the reactions would.
+        ME_TYPE=$(gh api user --jq .type 2>/dev/null || echo "Bot")
+        if [ "$ME_TYPE" != "Bot" ]; then
+          echo "github-token belongs to a user, not an app; leaving reactions alone"
+          exit 0
+        fi
+        ME=$(gh api user --jq .login 2>/dev/null || echo "github-actions[bot]")
+
+        # ------------------------------------------------------------------
+        # 👀 — it said "I am looking at this", and the run has stopped looking.
+        clear_eyes() {
+          ids=$(gh api "$1" --paginate \
+            --jq '.[] | select(.content=="eyes") | select(.user.login=="'"$ME"'") | .id' \
+            2>/dev/null || true)
+          for id in $ids; do
+            gh api -X DELETE "$1/$id" >/dev/null 2>&1 \
+              && echo "cleared 👀 -> $1/$id" || echo "warning: could not clear 👀 (non-fatal)"
+          done
+        }
+        if [ -n "${PR_NUMBER:-}" ]; then
+          clear_eyes "repos/$REPO/issues/$PR_NUMBER/reactions"
+        fi
+        if [ "$EVENT_NAME" = "issue_comment" ] && [ -n "${COMMENT_ID:-}" ]; then
+          clear_eyes "repos/$REPO/issues/comments/$COMMENT_ID/reactions"
+        fi
 
         # ------------------------------------------------------------------
         # THE 👍, SETTLED WHERE EVERY ENDING IS VISIBLE.
@@ -1565,20 +1600,6 @@ runs:
         # thumb only that step maintains is one every other ending leaves in
         # place, endorsing a head nobody reviewed. This step runs on always().
         #
-        # DECLINED UNDER A PAT, and that is the point rather than a limitation.
-        # GitHub has no way to ask "which reaction did I create" after the fact,
-        # so the only handle is the author — and when github-token is a
-        # maintainer's PAT, their manual 👍 and ours are the same author. Two
-        # rounds of review went into narrowing that predicate; the honest answer
-        # at the boundary is to leave reactions alone rather than to guess and
-        # delete somebody's approval. The review body and the summary still say
-        # everything the thumb would have.
-        ME_TYPE=$(gh api user --jq .type 2>/dev/null || echo "Bot")
-        if [ "$ME_TYPE" != "Bot" ]; then
-          echo "github-token belongs to a user, not an app; leaving 👍 alone"
-          exit 0
-        fi
-        ME=$(gh api user --jq .login 2>/dev/null || echo "github-actions[bot]")
         THUMBS="repos/$REPO/issues/$PR_NUMBER/reactions"
         MINE=$(gh api "$THUMBS" --paginate \
           --jq '.[] | select(.content=="+1") | select(.user.login=="'"$ME"'") | .id' \
@@ -1619,5 +1640,6 @@ runs:
           "$RUNNER_TEMP/policy-block.json" \
           "$RUNNER_TEMP/pr.diff" "$RUNNER_TEMP/diff-guard.json" "$RUNNER_TEMP/prev-summary.md" \
           "$RUNNER_TEMP/wallclock-timeout" "$RUNNER_TEMP/cr-usage.jsonl" \
+          "$RUNNER_TEMP/cr-clean" \
           "$RUNNER_TEMP/result.l1.json" "$RUNNER_TEMP/result.l2.json" \
           "$RUNNER_TEMP/result-extra.l1.json" "$RUNNER_TEMP/result-extra.l2.json"

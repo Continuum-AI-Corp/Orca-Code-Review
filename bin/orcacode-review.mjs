@@ -827,7 +827,9 @@ function usage() {
   say(`${bold("orcacode-review")} — ${t("usage.tagline")}
 
 ${bold(t("usage.usage"))}
-  npx orcacode-review [command] [options]
+  npx @orcarouter/code-review [command] [options]
+
+  ${dim(t("usage.bareCommand"))}
 
 ${bold(t("usage.commands"))}
   init             ${t("usage.cmdInit")}
@@ -849,8 +851,9 @@ ${bold(t("usage.options"))}
   --version, -v    ${t("usage.optVersion")}
 
 ${bold(t("usage.examples"))}
-  npx orcacode-review skill install --platform claude --platform codex --yes
-  npx orcacode-review skill install --scope global --platform cursor --lang zh
+  npx @orcarouter/code-review --platform claude --platform codex --yes
+  npx @orcarouter/code-review skill list
+  npx @orcarouter/code-review doctor
 
 ${bold(t("usage.docs"))}  https://github.com/Continuum-AI-Corp/orca-code-review`);
 }

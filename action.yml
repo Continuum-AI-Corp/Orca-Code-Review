@@ -278,9 +278,21 @@ runs:
         EVENT_NAME: ${{ github.event_name }}
         COMMENT_ID: ${{ github.event.comment.id }}
       run: |
+        # THE ID THIS RUN CREATED, recorded so the clear step can delete exactly
+        # it. Matching on the token's identity instead was wrong twice over: with
+        # a PAT it selects the maintainer's OWN 👀, including one they added by
+        # hand before the workflow ran, and with two overlapping runs each would
+        # clear the other's acknowledgement while its review was still going.
+        #
+        # POST is idempotent per (user, content): reacting when one is already
+        # there returns the EXISTING id rather than creating a second, so a
+        # re-run records the id it will legitimately own.
+        : > "$RUNNER_TEMP/cr-eyes.ids"
         react() {
-          if gh api -X POST "$1" -f content=eyes >/dev/null 2>&1; then
-            echo "reacted 👀 -> $1"
+          id=$(gh api -X POST "$1" -f content=eyes --jq .id 2>/dev/null || true)
+          if [ -n "$id" ]; then
+            echo "$1 $id" >> "$RUNNER_TEMP/cr-eyes.ids"
+            echo "reacted 👀 -> $1 (id $id)"
           else
             echo "warning: failed to react at $1 (non-fatal)"
           fi
@@ -670,6 +682,7 @@ runs:
         BASE: origin/${{ steps.pr.outputs.base }}
         HEAD: ${{ steps.pr.outputs.head_sha }}
         INSTRUCTION: ${{ github.action_path }}/rules/severity-instruction.md
+        OUTPUT_SHAPE: ${{ github.action_path }}/rules/output-shape.md
         # Untrusted-data framing prepended to the project-conventions doc that
         # we extract from the BASE revision and inline into the background file
         # (see the review step): tells the engine the doc may only suppress
@@ -792,6 +805,18 @@ runs:
           echo "Severity rubric: using the dashboard's server-side override."
         else
           cp "$INSTRUCTION" "$BACKGROUND"
+        fi
+        # APPENDED IN BOTH BRANCHES, because it is not part of the rubric. The
+        # rubric decides WHICH severity a finding gets and a workspace may
+        # replace it wholesale; the output SHAPE is how every finding is written
+        # down, and the renderer splits a title from a body on it. Living inside
+        # the replaceable file, the shape contract reached only workspaces that
+        # had not customised their rubric — the ones least likely to notice the
+        # untitled output it exists to prevent.
+        if [ -s "$OUTPUT_SHAPE" ]; then
+          echo "" >> "$BACKGROUND"
+          echo "" >> "$BACKGROUND"
+          cat "$OUTPUT_SHAPE" >> "$BACKGROUND"
         fi
 
         # Append the first conventions doc found at the base revision. $BASE is
@@ -1273,7 +1298,12 @@ runs:
             // 1) The model sometimes writes its own **bold** lead — use it verbatim.
             const lead = raw.match(/^\*\*(.+?)\*\*\s+([\s\S]+)$/);
             if (lead) {
-              return `${badge} **${mk(lead[1])}**\n\n${lead[2].replace(/\*\*/g, '').trim()}`;
+              // THE BODY KEEPS ITS ASTERISKS. Stripping every `**` was tolerable
+              // while only some findings took this branch; the rubric now asks
+              // for a bold title on all of them, so every explanation would pass
+              // through it — and `x ** 2` or `src/**/*.js` in a finding came out
+              // corrupted. Only the title's own markup is removed, by mk().
+              return `${badge} **${mk(lead[1])}**\n\n${lead[2].trim()}`;
             }
             // 2) Else split only when the first sentence is short enough to title.
             const rest = raw.replace(/\*\*/g, '');
@@ -1424,7 +1454,19 @@ runs:
           // Mode notes: exhaustive pass count (renders only when > 1) and the
           // quiet-mode explainer next to the true counts.
           args.push('--passes', process.env.PASSES || '1');
-          if (process.env.QUIET === 'true') args.push('--quiet');
+          // ONLY WHEN THERE IS STILL A P2 TO EXPLAIN. The note reads "quiet mode:
+          // P2 shown in summary only", which is true while the summary carries
+          // P2s the inline comments do not. Now that the summary reads the
+          // report_on-filtered file, a workspace excluding P2 there has a summary
+          // with zero P2s — and the note would sit under a 0 explaining why it is
+          // shown. The flag describes a difference; with no difference, no note.
+          const summaryHasP2 = (() => {
+            try {
+              const r = JSON.parse(fs.readFileSync(process.env.RESULT, 'utf8'));
+              return (r.comments || []).some((c) => /^\s*\[?P2\]?/i.test(String(c.content || '')));
+            } catch (e) { return true; }  // unreadable: keep the old behaviour
+          })();
+          if (process.env.QUIET === 'true' && summaryHasP2) args.push('--quiet');
 
           const summaryMd = execFileSync('node', args, { encoding: 'utf8' });
           // Preserve the author's description text; only the marker region changes.
@@ -1506,26 +1548,19 @@ runs:
         EVENT_NAME: ${{ github.event_name }}
         COMMENT_ID: ${{ github.event.comment.id }}
       run: |
-        # The identity the token posts as, which is who we placed the eyes as.
-        ME=$(gh api user --jq .login 2>/dev/null || echo "github-actions[bot]")
-        clear() {
-          ids=$(gh api "$1" --paginate \
-            --jq '.[] | select(.content=="eyes") | select(.user.login=="'"$ME"'") | .id' \
-            2>/dev/null || true)
-          for id in $ids; do
-            if gh api -X DELETE "$1/$id" >/dev/null 2>&1; then
-              echo "cleared 👀 -> $1/$id"
-            else
-              echo "warning: could not clear 👀 at $1/$id (non-fatal)"
-            fi
-          done
-        }
-        if [ -n "${PR_NUMBER:-}" ]; then
-          clear "repos/$REPO/issues/$PR_NUMBER/reactions"
-        fi
-        if [ "$EVENT_NAME" = "issue_comment" ] && [ -n "${COMMENT_ID:-}" ]; then
-          clear "repos/$REPO/issues/comments/$COMMENT_ID/reactions"
-        fi
+        # ONLY WHAT THIS RUN RECORDED. See the note beside the react step: a
+        # by-identity match deletes a maintainer's own 👀 under a PAT, and lets
+        # concurrent runs clear each other.
+        IDS="$RUNNER_TEMP/cr-eyes.ids"
+        [ -s "$IDS" ] || { echo "no 👀 recorded by this run; nothing to clear"; exit 0; }
+        while read -r endpoint id; do
+          [ -n "$endpoint" ] && [ -n "$id" ] || continue
+          if gh api -X DELETE "$endpoint/$id" >/dev/null 2>&1; then
+            echo "cleared 👀 -> $endpoint/$id"
+          else
+            echo "warning: could not clear 👀 at $endpoint/$id (non-fatal)"
+          fi
+        done < "$IDS"
 
     - name: Clean up engine output
       if: always()

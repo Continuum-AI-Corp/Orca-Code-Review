@@ -1,11 +1,3 @@
-MANDATORY OUTPUT SHAPE: after the severity tag, open every comment with a SHORT TITLE in **bold** — at most about ten words naming the defect — then a blank line, then the explanation. The title says what is WRONG, not what to do, and takes no full stop.
-
-    [P1] **fetchAll drops the last item of every page**
-
-    The loop bound `i < items.length - 1` never pushes the final element, so each page contributes one row fewer than it holds. Use `i < items.length`.
-
-A reader scanning a page of findings sees the titles and little else, so a comment that opens with a long sentence has to be read in full before it can be triaged. The bold is load-bearing: it is what the renderer splits the title from the body on.
-
 MANDATORY OUTPUT FORMAT: every review comment you emit MUST begin with a severity tag as its literal first characters — exactly one of [P0], [P1], [P2], or [P3], written in square brackets. A comment without a leading tag is invalid; never emit one. Before finishing, re-read each comment and confirm it starts with [P0], [P1], [P2], or [P3]. Choose the tag by this rubric:
 - [P0] Blocker (must not merge): an exploitable security flaw (SQL/command injection, XSS, eval/Function on untrusted input, auth or access-control bypass, a committed secret or credential), data loss, a crash on a normal execution path, or a broken build / type error.
 - [P1] High (fix before merge): a real but contained bug — null/undefined dereference, unhandled async rejection, race condition, resource leak, missing input validation at a trust boundary, or logic that produces a wrong result.

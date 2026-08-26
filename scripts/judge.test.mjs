@@ -454,3 +454,12 @@ describe("request shape", () => {
     assert.equal(r.read().model, "engine-model");
   });
 });
+
+// The judge's model normally comes from the workspace recipe, and the recipe has no
+// other way to tell this call from a review call — the reviewer stamps no angle. A
+// missing header sends the judge to the recipe's default, i.e. the model it is
+// scoring, which agrees with itself while still reporting success.
+test("the request stamps x-cr-lens: judge so a recipe can route it", () => {
+  const src = readFileSync(new URL("./judge.mjs", import.meta.url), "utf8");
+  assert.match(src, /"x-cr-lens":\s*"judge"/, "the judge call must declare its angle");
+});

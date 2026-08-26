@@ -485,7 +485,7 @@ runs:
           // Own marker (distinct from the summary and oversized-skip ones).
           const MARKER = '<!-- orca-code-review-disabled -->';
           const footer =
-            `\n\n<sub>Reviewed via [OrcaRouter](https://orcarouter.ai) — ` +
+            `\n\n<sub>[OrcaCode Review](https://www.orcarouter.ai/code-review) — ` +
             `Route Smarter. Ship Safer. Spend Less.</sub>`;
           const body =
             `${MARKER}\n## 🐳 ${brand}\n\n` +
@@ -597,7 +597,7 @@ runs:
           // deletes this notice).
           const MARKER = '<!-- orca-code-review-skip -->';
           const footer =
-            `\n\n<sub>Reviewed via [OrcaRouter](https://orcarouter.ai) — ` +
+            `\n\n<sub>[OrcaCode Review](https://www.orcarouter.ai/code-review) — ` +
             `Route Smarter. Ship Safer. Spend Less.</sub>`;
           const outcome = pass
             ? `and the check **passes** (\`on-oversized-diff: "pass"\`), so this skip does not block your merge.`
@@ -1049,7 +1049,7 @@ runs:
             ? ` · request id \`${String(block.requestId).slice(0, 80)}\``
             : '';
           const footer =
-            `\n\n<sub>Reviewed via [OrcaRouter](https://orcarouter.ai) — ` +
+            `\n\n<sub>[OrcaCode Review](https://www.orcarouter.ai/code-review) — ` +
             `Route Smarter. Ship Safer. Spend Less.${idTag}</sub>`;
           const body =
             `${MARKER}\n## 🐳 ${brand}\n\n` +
@@ -1091,10 +1091,13 @@ runs:
     # there anything left to say" and after a narrowed report_on there can be
     # nothing left to say while the raw result is full of findings.
     #
-    # The gate, the summary counts and the run report keep reading $RESULT — the
-    # unfiltered file. report_on changes what lands on the PR, never what is
-    # enforced or measured; the union with block_on inside the script is what stops
-    # a display preference from hiding a merge blocker.
+    # The gate and the run report keep reading $RESULT — the unfiltered file.
+    # report_on changes what lands on the PR, never what is enforced or measured;
+    # the union with block_on inside the script is what stops a display preference
+    # from hiding a merge blocker.
+    #
+    # THE SUMMARY IS DISPLAY, so it reads the filtered copy — it did not, and the
+    # pinned description contradicted the review three lines below it.
     - name: report_on severity filter
       if: steps.settings.outputs.decision != 'skip' && steps.guard.outputs.decision != 'skip'
       shell: bash
@@ -1166,7 +1169,7 @@ runs:
           // Attribution for the Apache-2.0 engine lives in NOTICE + README, not
           // in every comment — OCR is consumed as a package, not redistributed.
           const footer =
-            `\n\n<sub>Reviewed via [OrcaRouter](https://orcarouter.ai) — ` +
+            `\n\n<sub>[OrcaCode Review](https://www.orcarouter.ai/code-review) — ` +
             `Route Smarter. Ship Safer. Spend Less.</sub>`;
 
           if (comments.length === 0) {
@@ -1265,9 +1268,19 @@ runs:
       uses: actions/github-script@v7
       env:
         PR_NUMBER: ${{ steps.pr.outputs.number }}
-        # Deliberately the UNfiltered result: the summary shows TRUE counts
-        # (its quiet-mode note explains why fewer P2s appear inline).
-        RESULT: ${{ runner.temp }}/result.json
+        # THE FILTERED COPY, the same one the inline comments come from.
+        #
+        # This used to be the raw result, deliberately, so the summary could show
+        # "true counts". That reads as honesty and lands as a contradiction: a
+        # workspace on report_on=P0,P1 saw two P1s inline and a description
+        # pinned above them announcing P2s and P3s that appear nowhere in the
+        # review. The reader has no way to tell which surface to believe, and
+        # the one they can act on is the one they were shown.
+        #
+        # Two surfaces of one review must not disagree. The gate and the run
+        # report still read $RESULT — those MEASURE and ENFORCE, and a display
+        # preference must never move them. This one is display.
+        RESULT: ${{ runner.temp }}/result-reported.json
         PREV_BODY: ${{ runner.temp }}/prev-summary.md
         SUMMARY_SCRIPT: ${{ github.action_path }}/scripts/summary-comment.mjs
         INJECT_SCRIPT: ${{ github.action_path }}/scripts/inject-summary.mjs
@@ -1396,6 +1409,53 @@ runs:
           --tier standard --gate "$GATE_RESULT" \
           --url "$ORCAROUTER_URL" \
           --engine-version "$ENGINE_VERSION"
+
+    # The 👀 said "I am looking at this". Once the review has been posted — or
+    # has failed and said so — that is no longer true, and a reaction nobody
+    # removes stops carrying information: every PR the reviewer has ever touched
+    # wears one for ever, so the operator cannot tell an in-flight run from a
+    # finished one. Placing it and leaving it is the same as not placing it.
+    #
+    # always(), because a FAILED run has to clear it too. That is the case where a
+    # stale pair of eyes is worst: it promises a review that is not coming.
+    #
+    # Only OUR OWN reaction. The endpoint deletes by id, so this lists first and
+    # removes the one whose user matches the token's identity — a maintainer who
+    # also reacted 👀 keeps theirs.
+    #
+    # Best-effort throughout: `|| true` on the deletes and no `set -e`
+    # dependency, because failing a run over a leftover emoji would trade a
+    # cosmetic problem for a real one.
+    - name: Clear the 👀 acknowledgement
+      if: always()
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ github.repository }}
+        PR_NUMBER: ${{ steps.pr.outputs.number }}
+        EVENT_NAME: ${{ github.event_name }}
+        COMMENT_ID: ${{ github.event.comment.id }}
+      run: |
+        # The identity the token posts as, which is who we placed the eyes as.
+        ME=$(gh api user --jq .login 2>/dev/null || echo "github-actions[bot]")
+        clear() {
+          ids=$(gh api "$1" --paginate \
+            --jq '.[] | select(.content=="eyes") | select(.user.login=="'"$ME"'") | .id' \
+            2>/dev/null || true)
+          for id in $ids; do
+            if gh api -X DELETE "$1/$id" >/dev/null 2>&1; then
+              echo "cleared 👀 -> $1/$id"
+            else
+              echo "warning: could not clear 👀 at $1/$id (non-fatal)"
+            fi
+          done
+        }
+        if [ -n "${PR_NUMBER:-}" ]; then
+          clear "repos/$REPO/issues/$PR_NUMBER/reactions"
+        fi
+        if [ "$EVENT_NAME" = "issue_comment" ] && [ -n "${COMMENT_ID:-}" ]; then
+          clear "repos/$REPO/issues/comments/$COMMENT_ID/reactions"
+        fi
 
     - name: Clean up engine output
       if: always()

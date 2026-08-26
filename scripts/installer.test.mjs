@@ -214,44 +214,35 @@ test("the skill refuses to call an install complete without the secret", () => {
   assert.match(SKILL, /[Dd]o not report the\s+install as complete while the secret is missing/s);
 });
 
-// ------------------------------------------------------------ install modes ---
+// ----------------------------------------------------------- one install path ---
 
-test("the skill offers both install modes and routes between them", () => {
-  assert.match(SKILL, /## Install — GitHub App mode/);
-  assert.match(SKILL, /GitHub Action \(recommended\)/);
-  assert.match(SKILL, /https:\/\/github\.com\/apps\/orcacode-review\/installations\/new/);
+test("the skill offers exactly one way to install", () => {
+  // App mode was removed. A skill that still describes it would send users to
+  // an approval page for a path this repo no longer supports.
+  assert.doesNotMatch(SKILL, /GitHub App mode/);
+  assert.doesNotMatch(SKILL, /github\.com\/apps\/orcacode-review\/installations/);
+  assert.match(SKILL, /It runs as a \*\*GitHub Action\*\*/);
 });
 
-test("App mode warns about the permission before offering the choice", () => {
-  // Walking a plain org member to an approval page they will be stopped at is
-  // the whole failure this ordering exists to avoid.
-  const pick = SKILL.slice(SKILL.indexOf("### 0. Pick the mode"), SKILL.indexOf("### 1. Preflight"));
-  assert.match(pick, /permissions\.admin/, "no repo-permission probe");
-  assert.match(pick, /memberships/, "no org-role probe");
-  assert.match(pick, /organization owner/i);
-  assert.ok(
-    pick.indexOf("admin: false") < pick.indexOf("Chose App mode?"),
-    "the cannot-approve warning must come before the routing line",
-  );
+test("the install flow starts at preflight, with no mode question", () => {
+  const install = SKILL.slice(SKILL.indexOf("## Install"), SKILL.indexOf("## Reconfigure"));
+  assert.match(install, /### 1\. Preflight/);
+  assert.doesNotMatch(install, /Pick the mode/);
+  // Step numbering must be contiguous — removing step 0 is where an off-by-one
+  // would hide, and a skill that skips a number reads as a truncated file.
+  const steps = [...install.matchAll(/^### (\d+)\./gm)].map((m) => Number(m[1]));
+  assert.deepEqual(steps, [1, 2, 3, 4, 5, 6, 7, 8]);
 });
 
-test("App mode never claims the install can be automated", () => {
-  const app = SKILL.slice(SKILL.indexOf("## Install — GitHub App mode"), SKILL.indexOf("## Do not install both"));
-  assert.match(app, /no REST endpoint that installs an\s+App/s);
-  // Printing the URL matters more than opening it: SSH, containers and CI have
-  // no browser, and a silent `open` leaves the user waiting on nothing.
-  assert.match(app, /never open it without printing it/i);
-  // The repo secret belongs to Action mode only.
-  assert.match(app, /No `ORCAROUTER_API_KEY` secret is needed/);
-});
-
-test("the double-install conflict is documented in both places", () => {
-  assert.match(SKILL, /## Do not install both/);
+test("the double-review symptom is still documented", () => {
+  // The App exists whether or not this skill installs it, so someone can still
+  // end up with two reviewers.
   const trouble = fs.readFileSync(
     new URL("../skills/setup-orca-code-review/references/troubleshooting.md", import.meta.url),
     "utf8",
   );
   assert.match(trouble, /two sets of comments/i);
+  assert.match(trouble, /this skill does not install it/i);
 });
 
 // ------------------------------------------- the two workflow copies agree ---

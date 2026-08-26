@@ -9,7 +9,7 @@ Automatically review every pull request, post findings directly on the affected 
 ---
 
 <p align="center">
-  <img src="docs/demo.gif" alt="Installing the skill with npx, then asking an agent to set up OrcaCode Review — in Action mode and in GitHub App mode" width="900">
+  <img src="docs/demo.gif" alt="Installing the skill with npx, then asking an agent to set up OrcaCode Review in a repo" width="900">
 </p>
 
 ---

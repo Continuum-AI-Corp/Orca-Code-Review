@@ -166,6 +166,22 @@ npm's unpublish window is 72 hours and a withdrawn version number can never be
 reused, so anything checkable before publishing is checked there rather than
 discovered afterward.
 
+**Unpublishing cannot be automated, and the `NPM_TOKEN` secret cannot do it.**
+Tried, on the 1.x withdrawal: every version came back
+
+```
+npm error code E403
+Granular access tokens that bypass two-factor authentication may not
+perform this action.
+```
+
+CI can publish and cannot withdraw, by registry policy rather than by
+configuration — so no token, scope, or workflow fixes it, and a workflow that
+offers the button is a guard rail around something that never runs. Withdrawing
+a version takes an interactive `npm login` (web or OTP) from a maintainer's own
+machine, inside the 72 hours. Plan on that when a release needs pulling: the
+person, not the pipeline.
+
 Auth is the `NPM_TOKEN` repository secret. Use a **granular access token scoped
 to this one package**, not a classic automation token — a leaked classic token
 can publish anything in the account. Rotate with `gh secret set NPM_TOKEN`.

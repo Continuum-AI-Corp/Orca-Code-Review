@@ -1621,7 +1621,16 @@ runs:
           echo "github-token belongs to a user, not an app; leaving reactions alone"
           exit 0
         fi
-        ME=$(gh api user --jq .login 2>/dev/null || echo "github-actions[bot]")
+        # SAME TRAP AS THE TYPE PROBE, and it survived the fix to that one: with an
+        # installation token `gh api user` can exit 0 and print nothing, so
+        # `|| echo` never fires and ME came back EMPTY. The delete filter then read
+        # `select(.user.login=="")`, matched nothing, and the 👀 stayed on the PR
+        # for ever while the step reported success. Observed on a clean run that
+        # placed both 👀 and 👍 and cleared neither.
+        #
+        # Test the VALUE, not the exit status.
+        ME=$(gh api user --jq .login 2>/dev/null) || ME=""
+        [ -n "$ME" ] || ME="github-actions[bot]"
 
         # ------------------------------------------------------------------
         # 👀 — it said "I am looking at this", and the run has stopped looking.

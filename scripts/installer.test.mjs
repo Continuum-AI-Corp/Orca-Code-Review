@@ -162,6 +162,18 @@ test("a scoped package declares public access", () => {
   assert.equal(PKG.publishConfig?.access, "public");
 });
 
+test("the CLI ships with no dependencies", () => {
+  // `npx` downloads the whole tree before running anything, so a dependency is
+  // latency on every install. 1.1.0 through 1.5.0 shipped with the package
+  // depending on ITSELF at ^1.0.2 — every npx fetched a second, older copy of
+  // the CLI into node_modules, and nothing failed, so five releases carried it.
+  // A self-reference is also a registry dependent, which is why this is a test
+  // and not a note in RELEASE.md.
+  for (const field of ["dependencies", "peerDependencies", "optionalDependencies"]) {
+    assert.deepEqual(Object.keys(PKG[field] ?? {}), [], `${field} must stay empty`);
+  }
+});
+
 test("the installed command is short even though the package name is scoped", () => {
   // `npm i -g` creates a command named by the bin KEY, not the package name.
   assert.deepEqual(Object.keys(PKG.bin), ["orcacode-review"]);

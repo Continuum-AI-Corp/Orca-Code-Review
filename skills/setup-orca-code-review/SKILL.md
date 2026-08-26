@@ -1,13 +1,20 @@
 ---
 name: setup-orca-code-review
-description: Set up, reconfigure, troubleshoot, or remove OrcaCode Review — AI pull-request review powered by OrcaRouter — in a GitHub repository. Handles the whole lifecycle end to end without asking the user to run a CLI. Use whenever the user mentions OrcaCode Review, OrcaRouter code review, "@orcarouter code review", or /orcacode-review, and whenever they ask to set up AI code review on a repo, add the orca-code-review action, change which severities block merges, find out why a review did not run or did not post findings, or take the review workflow back out.
+description: Set up, reconfigure, troubleshoot, or remove OrcaCode Review — AI pull-request review powered by OrcaRouter — in a GitHub repository. Handles the whole lifecycle end to end without asking the user to run a CLI. Use whenever the user mentions OrcaCode Review, OrcaRouter code review, "@orcarouter code review", or /orcacode-review, and whenever they ask to set up AI code review on a repo, add the orca-code-review action, change which severities block merges, find out why a review did not run or did not post findings, take the review workflow back out, or install the OrcaCode Review GitHub App instead of the Action.
 ---
 
 # OrcaCode Review
 
-OrcaCode Review is a GitHub composite action that reviews every pull request with
-an LLM, posts findings as inline comments, and fails a status check when serious
-issues are found. Model selection lives in OrcaRouter, not in the workflow file.
+OrcaCode Review reviews every pull request with an LLM, posts findings as inline
+comments, and fails a status check when serious issues are found. Model selection
+lives in OrcaRouter, not in the repo.
+
+It runs one of two ways, and a repo should use exactly one:
+
+- **GitHub Action** — a workflow file plus one secret. Needs write access.
+  The default, and the only one an agent can complete end to end.
+- **GitHub App** — a bot, nothing in the repo. Needs repo admin or org owner,
+  and a human to approve the install in a browser.
 
 **Severity contract:** `P0` critical / `P1` high → ❌ block. `P2` advisory → 💬 comment.
 
@@ -19,7 +26,8 @@ run an installer; that is what this skill replaces.
 
 | The user says something like… | You do |
 | --- | --- |
-| "set up OrcaCode Review here", "@orcarouter code review 帮我配置这个仓库" | [Install](#install) |
+| "set up OrcaCode Review here", "@orcarouter code review 帮我配置这个仓库" | [Install](#install) — offer Action vs App first |
+| "install the GitHub App instead", "用 App 模式" | [App mode](#install--github-app-mode) |
 | "only block P0", "move the config to the dashboard", "raise the diff limit" | [Reconfigure](#reconfigure) |
 | "why didn't the review run?", "no comments appeared", "the check is stuck red" | [Troubleshoot](#troubleshoot) |
 | "remove OrcaCode Review", "turn the review off" | [Uninstall](#uninstall) |
@@ -42,6 +50,39 @@ If `gh` is missing or unauthenticated, everything still works — you just hand 
 user web URLs instead of running commands. Say so once and move on.
 
 ## Install
+
+There are two ways to run OrcaCode Review on a repo. Pick one — **never both**,
+see [Do not install both](#do-not-install-both).
+
+### 0. Pick the mode
+
+Check what the user is even able to do *before* offering the choice, so you do
+not walk them into an approval they cannot give:
+
+```bash
+gh api /repos/<owner>/<name> --jq '{admin: .permissions.admin, ownerType: .owner.type, owner: .owner.login}'
+# for an Organization owner, also:
+gh api /orgs/<owner>/memberships/$(gh api /user --jq .login) --jq .role   # "admin" | "member"
+```
+
+Then ask with `AskUserQuestion`:
+
+**"How should OrcaCode Review run on this repo?"**
+
+- *GitHub Action (recommended)* — a workflow file in the repo plus one secret.
+  Anyone with **write access** can set it up, it works on personal repos, and
+  the config is visible in the diff like any other CI. This is the path the
+  rest of this section describes.
+- *GitHub App* — no file in the repo; a bot reviews PRs. Needs **repo admin, or
+  organization owner** on an org repo. One approval can cover many repos.
+
+**If the probe above said `admin: false` and the org role is `member`, say so
+before they choose.** They cannot complete App mode themselves — they would
+click through to the approval page and be stopped there. Offer Action mode, or
+offer to draft the request they send to an owner.
+
+Chose App mode? → [Install — GitHub App mode](#install--github-app-mode).
+Otherwise carry on.
 
 ### 1. Preflight
 
@@ -137,10 +178,13 @@ If it is not there yet, do not continue to the test PR — the run will fail on
 auth and the failure will look like a configuration bug rather than a missing
 key. Wait, or skip to step 8 and list it as outstanding.
 
-### 5. Enable the app
+### 5. Switch it on in the OrcaRouter console
 
 Point the user at **OrcaRouter → Apps → OrcaCode Review** (<https://www.orcarouter.ai/>)
-to turn the app on and choose review models. Reviews will not run until it is enabled.
+to turn it on and choose review models. Reviews will not run until it is enabled.
+
+This is the OrcaRouter console, not the GitHub App — Action mode still needs it.
+There is no API for this step today, so it is the user's to do.
 
 ### 6. Commit and open a test PR
 
@@ -182,6 +226,110 @@ Re-check with `gh secret list` before claiming it is done. Do not report the
 install as complete while the secret is missing: the workflow is in place but
 every run will fail on auth, and "installed" would be a lie the user only finds
 out about on their next PR.
+
+## Install — GitHub App mode
+
+No file lands in the repo. OrcaRouter reviews pull requests as a bot, and the
+repo's own config is the App's installation rather than a workflow.
+
+### 1. Confirm they can actually approve it
+
+Installing a GitHub App is a **permission grant**, so GitHub requires a human to
+approve it on an authorization page. There is no REST endpoint that installs an
+App on someone's behalf — this is deliberate, not a gap you can route around.
+
+The approver must be **repo admin**, or an **organization owner** for an org
+repo. If the step-0 probe showed otherwise, stop here and offer:
+
+- Action mode instead, which only needs write access, or
+- a message they can forward to an owner, containing the install link below and
+  one line on what it does.
+
+### 2. Hand over the link
+
+Print the URL. Offer to open it, but **never open it without printing it** —
+SSH sessions, containers and CI have no browser, and a tool that silently
+launches nothing leaves the user waiting on something that will not happen.
+
+```
+https://github.com/apps/orcacode-review/installations/new
+```
+
+To open it as well:
+
+```bash
+open <url>        # macOS
+xdg-open <url>    # Linux
+```
+
+Tell them what to expect on that page: choose the account or organization, then
+**select only this repository** unless they mean to cover more. "All
+repositories" is a much larger grant, and on a paid plan a much larger bill.
+
+### 3. Wait, then verify
+
+Ask them to say when the approval is done — do not poll silently and do not
+assume.
+
+Verification depends on what their token can see:
+
+```bash
+# Works only with the admin:org scope, which they may not want to grant:
+gh api /orgs/<owner>/installations --jq '.installations[].app_slug'
+```
+
+`GET /repos/{owner}/{repo}/installation` does **not** work here — it needs the
+App's own JWT, which no user token can produce.
+
+If neither is available, verify the honest way: open a pull request and look for
+the bot's review. That is the same thing the user cares about anyway.
+
+```bash
+gh pr create --fill
+```
+
+### 4. Configure
+
+Everything else lives at **OrcaRouter → Apps → OrcaCode Review**
+(<https://www.orcarouter.ai/>): models, review mode, severity rules, merge
+policy, rubric.
+
+**No `ORCAROUTER_API_KEY` secret is needed in the repo** — the App carries its
+own credentials. Do not add one; it would sit there unused and look load-bearing
+to the next person who reads the settings page.
+
+### 5. Make the gate real
+
+The App posts its own status check. Read the exact check name off the test PR
+rather than guessing it:
+
+```bash
+gh pr checks <number>
+```
+
+Then require that check under **Settings → Branches / Rulesets → Require status
+checks to pass**. Until it is required, a red check blocks nothing.
+
+### 6. Report
+
+Same rules as Action mode: what is in place, what is not, and any outstanding
+action as a copy-pasteable command. If the approval never happened, say the
+install is **not** complete — an unapproved App reviews nothing and reports no
+error.
+
+## Do not install both
+
+The Action and the App both review the same pull requests. Running them together
+gives every PR two sets of comments and bills two reviews.
+
+Before installing either, check for the other:
+
+- Action present → `.github/workflows/orca-code-review.yml` exists on the base branch.
+- App present → a bot review or an extra check on a recent PR.
+
+If the user has one and wants the other, remove the first — [Uninstall](#uninstall)
+for the Action, or the App's own page on GitHub for the App. Removing the Action
+is the reversible one, so prefer that direction when they are unsure.
 
 ## Reconfigure
 

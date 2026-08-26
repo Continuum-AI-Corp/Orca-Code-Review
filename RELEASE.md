@@ -66,6 +66,29 @@ The repo and the action stay `orca-code-review`.
 `--access public` ships it private and the documented install command 404s for
 everyone outside the org.
 
+#### The `1.x` line was withdrawn; `2.0.0` is the floor
+
+`@orcarouter/code-review` starts at **2.0.0** on the registry. 1.0.2 through
+1.5.0 were published on 25–26 Aug 2026 and unpublished inside npm's 72-hour
+window, so the packument shows one version and its history looks truncated —
+it is not. What went with them:
+
+- **App mode.** Up to 1.4.0 the skill offered a GitHub App install as an
+  alternative to the Action. Installing an App is a permission grant only a
+  human can approve on a web page, so the agent could only hand over a link;
+  1.5.0 dropped it and 2.0.0 is the first version published without it. The
+  major marks that break rather than leaving it in a minor nobody can install.
+- **The self-dependency.** 1.1.0 through 1.5.0 declared
+  `@orcarouter/code-review: ^1.0.2` as a dependency *of itself*, so every
+  `npx` pulled a second, older copy of the CLI. Removed in 2.0.0 and pinned by
+  a test — see "the CLI ships with no dependencies" in
+  `scripts/installer.test.mjs`.
+
+Unpublishing was the right call only because the line was two days old with no
+known consumers. It is not the default: outside the 72-hour window npm refuses,
+a withdrawn number can never be reused, and anyone pinned to it breaks with an
+E404 rather than a warning. **Deprecate instead** — see below.
+
 #### The unscoped `orcacode-review` name is retired
 
 1.0.0 and 1.0.1 were published unscoped under a personal account, before the

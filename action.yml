@@ -64,9 +64,11 @@ inputs:
     default: "orcarouter/code-review"
   fix-first:
     description: >-
-      Severities the review is told to propose a concrete fix for first. Also
-      stops further exhaustive passes once one is found. Does not block the
-      merge on its own — that is block-on.
+      Severities that stop an exhaustive review early: once a pass has found
+      one, no further passes are added, because that finding is what to fix
+      first. NO EFFECT unless exhaustive is on. It does not change what the
+      reviewer is asked to look for, and it does not block the merge — that
+      is block-on.
     required: false
     default: "P0,P1"
   block-on:
@@ -200,8 +202,14 @@ runs:
     - name: Clear stale run files
       shell: bash
       run: |
+        # result-cheap/result-strong are the pre-single-tier names, kept here on
+        # purpose: a reused self-hosted runner hard-cancelled under the older
+        # action still has them, and they hold finding text and source snippets.
+        # This step exists for exactly the files an earlier cleanup never
+        # reached, so renaming them out of the list would strand them.
         rm -f "$RUNNER_TEMP/result.json" "$RUNNER_TEMP/review.log" \
           "$RUNNER_TEMP/result-final.json" "$RUNNER_TEMP/result-reported.json" \
+          "$RUNNER_TEMP/result-cheap.json" "$RUNNER_TEMP/result-strong.json" \
           "$RUNNER_TEMP/result-posted.json" "$RUNNER_TEMP/result-extra.json" \
           "$RUNNER_TEMP/result-merged.json" \
           "$RUNNER_TEMP/cr-settings.json" "$RUNNER_TEMP/cr-rubric.md" \
@@ -1096,15 +1104,20 @@ runs:
         RESULT: ${{ runner.temp }}/result.json
         RESULT_REPORTED: ${{ runner.temp }}/result-reported.json
       run: |
-        # --show only when there IS a value: an absent flag means "no setting to
-        # apply" and the script passes everything through, while an empty one
-        # legitimately means "only what blocks". Collapsing the two would hide
-        # findings whenever the settings fetch came back thin.
-        if [ -n "$REPORT_ON" ]; then
-          node "$REPORT_FILTER" "$RESULT"             --show "$REPORT_ON" --block-on "$BLOCK_ON" --out "$RESULT_REPORTED"
-        else
-          node "$REPORT_FILTER" "$RESULT" --out "$RESULT_REPORTED"
-        fi
+        # ALWAYS --show, including when it is empty. The script reads an ABSENT
+        # flag as "no setting to apply" and passes everything through, and an
+        # EMPTY one as "publish only what blocks" — two different answers, and
+        # only one of them can be right here. The settings step always emits a
+        # value: the dashboard path forwards what was configured, and the
+        # disabled path writes every severity explicitly. So an empty value
+        # arriving here can only be the configured "show only what blocks",
+        # and guarding on `-n` published everything instead.
+        #
+        # There is no path where this is empty because nothing wrote it: if the
+        # settings step fails outright it fails the job, having no
+        # continue-on-error.
+        node "$REPORT_FILTER" "$RESULT" \
+          --show "$REPORT_ON" --block-on "$BLOCK_ON" --out "$RESULT_REPORTED"
 
     - name: Quiet mode filter
       if: steps.settings.outputs.decision != 'skip' && steps.guard.outputs.decision != 'skip'
@@ -1259,7 +1272,6 @@ runs:
         INJECT_SCRIPT: ${{ github.action_path }}/scripts/inject-summary.mjs
         GATE: ${{ github.action_path }}/scripts/gate.mjs
         BLOCK_ON: ${{ steps.settings.outputs.block_on }}
-        FIX_FIRST: ${{ steps.settings.outputs.fix_first }}
         QUIET: ${{ steps.settings.outputs.quiet }}
         PASSES: ${{ steps.review.outputs.passes }}
       with:
@@ -1344,7 +1356,6 @@ runs:
         BRAND: ${{ inputs.brand }}
         # Effective values after the settings/input precedence rule.
         BLOCK_ON: ${{ steps.settings.outputs.block_on }}
-        FIX_FIRST: ${{ steps.settings.outputs.fix_first }}
         GATE: ${{ github.action_path }}/scripts/gate.mjs
         # ALWAYS the unfiltered result — quiet mode never weakens the gate.
         RESULT: ${{ runner.temp }}/result.json

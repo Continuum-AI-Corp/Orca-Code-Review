@@ -406,6 +406,13 @@ describe("action.yml wiring (settings, quiet mode)", () => {
     // its output. Everything that enforces or measures reads the raw result.
     const reportOn = sliceStep(yml, "- name: report_on severity filter", "- name: Quiet mode filter");
     assert.match(reportOn, /\/result\.json/, "the report_on filter must read the unfiltered result");
+    // --show goes out UNCONDITIONALLY. report-filter.mjs reads an absent flag as
+    // "no setting, pass everything through" and an empty one as "only what
+    // blocks"; the settings step always writes a value (the disabled path writes
+    // every severity explicitly), so a `-n` guard here turned the configured
+    // "show only what blocks" into "show everything".
+    assert.match(reportOn, /--show "\$REPORT_ON"/, "the report_on filter must always receive --show");
+    assert.doesNotMatch(reportOn, /-n "\$REPORT_ON"/, "an empty report_on is a setting, not a missing one");
     const quiet = sliceStep(yml, "- name: Quiet mode filter", "- name: Post review comments");
     assert.match(quiet, /result-reported\.json/, "quiet must read the report_on-filtered copy, not the raw one");
 

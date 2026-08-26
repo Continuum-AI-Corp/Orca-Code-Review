@@ -10,16 +10,17 @@
 # re-paste the block below. After upgrading the Action, re-paste this into the
 # router DSL to actually pick up the single-tier gpt-5.5 policy.
 #
-# Facts injected by the Action (via the in-job proxy shim):
-#   x-cr-prev-tier : none | cheap | strong   (tier used on the previous pass)
-#   x-cr-prev-p0p1 : true | false            (did the previous pass find a P0/P1)
+# Facts injected by the Action on every request (via the in-job proxy shim):
+#   x-cr-prev-tier : standard        (the tier recorded for this run)
+#   x-cr-prev-p0p1 : true | false    (did the previous pass find a P0/P1)
+#
+# x-cr-prev-tier has ONE value now. It used to be none | cheap | strong, back
+# when a cheap pass could escalate to a strong one; a rule you wrote against
+# `cheap` or `strong` will never match again and will fall through to the
+# default. It is still sent because it still says what the run was recorded as.
 #
 # ONE DEFAULT, because one model reviews every run. Add rules above it when you
 # want more than that — the facts to branch on are already arriving.
-#
-# Facts injected on every request:
-#   x-cr-prev-tier : the tier recorded for this run
-#   x-cr-prev-p0p1 : true | false   (did the previous pass find a P0/P1)
 #
 # Nothing reads them today. They are sent anyway so that a policy which wants
 # them — routing small diffs to a cheaper model, say, decided up front and still

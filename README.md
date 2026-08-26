@@ -6,6 +6,19 @@ Automatically review every pull request, post findings directly on the affected 
 
 **P0/P1 → ❌ Block** · **Findings → 💬 Comment** · **Clean → ✅ Pass**
 
+---
+
+<p align="center">
+  <img src="docs/demo.gif" alt="Installing the skill with npx, then asking an agent to set up OrcaCode Review — in Action mode and in GitHub App mode" width="900">
+</p>
+
+<p align="center">
+  <sub>One command installs the skill. Everything after that, you just ask for.<br>
+  Played at 3× — <a href="docs/demo.mp4">full speed</a>.</sub>
+</p>
+
+---
+
 ## How it works
 
 ```text

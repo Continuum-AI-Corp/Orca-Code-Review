@@ -217,6 +217,7 @@ runs:
           "$RUNNER_TEMP/policy-block.json" \
           "$RUNNER_TEMP/pr.diff" "$RUNNER_TEMP/diff-guard.json" "$RUNNER_TEMP/prev-summary.md" \
           "$RUNNER_TEMP/wallclock-timeout" "$RUNNER_TEMP/cr-usage.jsonl" \
+          "$RUNNER_TEMP/cr-clean" \
           "$RUNNER_TEMP/result.l1.json" "$RUNNER_TEMP/result.l2.json" \
           "$RUNNER_TEMP/result-extra.l1.json" "$RUNNER_TEMP/result-extra.l2.json"
 
@@ -278,6 +279,35 @@ runs:
         EVENT_NAME: ${{ github.event_name }}
         COMMENT_ID: ${{ github.event.comment.id }}
       run: |
+        # THE SAME GATE AS THE CLEAR, and its absence here was a regression the
+        # last round introduced: gating only the removal left a PAT-backed run
+        # POSTing 👀 and never taking it off, which is worse than the state
+        # before any of this. Declining is only coherent if it covers both ends.
+        #
+        # Checked once here rather than inside react(), so a token that cannot be
+        # identified costs one API call, not two.
+        ME_TYPE=$(gh api user --jq .type 2>/dev/null || echo "Bot")
+        if [ "$ME_TYPE" != "Bot" ]; then
+          echo "github-token belongs to a user, not an app; not reacting"
+          exit 0
+        fi
+
+        # JUST REACT. This used to record the id the POST returned so the clear
+        # step could delete exactly it — first unconditionally, then only on a
+        # 201 — and each version needed a JSON parse that node is not yet
+        # available for at this point in the job. The last one was a greedy
+        # expression that picked the nested author id out of a compact response,
+        # so the DELETE would have targeted the wrong resource.
+        #
+        # The id existed to tell OUR reaction from the token owner's. That
+        # question is settled once, in the settle step, by declining to manage
+        # reactions at all when github-token is a user rather than an app — so
+        # there is nothing here to record, and nothing to parse.
+        #
+        # Two concurrent runs as the same app share one reaction, so the first to
+        # finish clears it while the second is still working. Accepted: a missing
+        # 👀 for a few minutes is cosmetic, and every mechanism that avoided it
+        # cost more correctness elsewhere than it bought.
         react() {
           if gh api -X POST "$1" -f content=eyes >/dev/null 2>&1; then
             echo "reacted 👀 -> $1"
@@ -485,7 +515,7 @@ runs:
           // Own marker (distinct from the summary and oversized-skip ones).
           const MARKER = '<!-- orca-code-review-disabled -->';
           const footer =
-            `\n\n<sub>Reviewed via [OrcaRouter](https://orcarouter.ai) — ` +
+            `\n\n<sub>[OrcaCode Review](https://www.orcarouter.ai/code-review) — ` +
             `Route Smarter. Ship Safer. Spend Less.</sub>`;
           const body =
             `${MARKER}\n## 🐳 ${brand}\n\n` +
@@ -597,7 +627,7 @@ runs:
           // deletes this notice).
           const MARKER = '<!-- orca-code-review-skip -->';
           const footer =
-            `\n\n<sub>Reviewed via [OrcaRouter](https://orcarouter.ai) — ` +
+            `\n\n<sub>[OrcaCode Review](https://www.orcarouter.ai/code-review) — ` +
             `Route Smarter. Ship Safer. Spend Less.</sub>`;
           const outcome = pass
             ? `and the check **passes** (\`on-oversized-diff: "pass"\`), so this skip does not block your merge.`
@@ -670,6 +700,7 @@ runs:
         BASE: origin/${{ steps.pr.outputs.base }}
         HEAD: ${{ steps.pr.outputs.head_sha }}
         INSTRUCTION: ${{ github.action_path }}/rules/severity-instruction.md
+        OUTPUT_SHAPE: ${{ github.action_path }}/rules/output-shape.md
         # Untrusted-data framing prepended to the project-conventions doc that
         # we extract from the BASE revision and inline into the background file
         # (see the review step): tells the engine the doc may only suppress
@@ -792,6 +823,18 @@ runs:
           echo "Severity rubric: using the dashboard's server-side override."
         else
           cp "$INSTRUCTION" "$BACKGROUND"
+        fi
+        # APPENDED IN BOTH BRANCHES, because it is not part of the rubric. The
+        # rubric decides WHICH severity a finding gets and a workspace may
+        # replace it wholesale; the output SHAPE is how every finding is written
+        # down, and the renderer splits a title from a body on it. Living inside
+        # the replaceable file, the shape contract reached only workspaces that
+        # had not customised their rubric — the ones least likely to notice the
+        # untitled output it exists to prevent.
+        if [ -s "$OUTPUT_SHAPE" ]; then
+          echo "" >> "$BACKGROUND"
+          echo "" >> "$BACKGROUND"
+          cat "$OUTPUT_SHAPE" >> "$BACKGROUND"
         fi
 
         # Append the first conventions doc found at the base revision. $BASE is
@@ -1049,7 +1092,7 @@ runs:
             ? ` · request id \`${String(block.requestId).slice(0, 80)}\``
             : '';
           const footer =
-            `\n\n<sub>Reviewed via [OrcaRouter](https://orcarouter.ai) — ` +
+            `\n\n<sub>[OrcaCode Review](https://www.orcarouter.ai/code-review) — ` +
             `Route Smarter. Ship Safer. Spend Less.${idTag}</sub>`;
           const body =
             `${MARKER}\n## 🐳 ${brand}\n\n` +
@@ -1091,10 +1134,13 @@ runs:
     # there anything left to say" and after a narrowed report_on there can be
     # nothing left to say while the raw result is full of findings.
     #
-    # The gate, the summary counts and the run report keep reading $RESULT — the
-    # unfiltered file. report_on changes what lands on the PR, never what is
-    # enforced or measured; the union with block_on inside the script is what stops
-    # a display preference from hiding a merge blocker.
+    # The gate and the run report keep reading $RESULT — the unfiltered file.
+    # report_on changes what lands on the PR, never what is enforced or measured;
+    # the union with block_on inside the script is what stops a display preference
+    # from hiding a merge blocker.
+    #
+    # THE SUMMARY IS DISPLAY, so it reads the filtered copy — it did not, and the
+    # pinned description contradicted the review three lines below it.
     - name: report_on severity filter
       if: steps.settings.outputs.decision != 'skip' && steps.guard.outputs.decision != 'skip'
       shell: bash
@@ -1145,6 +1191,12 @@ runs:
         HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
         # The quiet-filtered copy — see the "Quiet mode filter" step above.
         RESULT: ${{ runner.temp }}/result-posted.json
+        # PRE-QUIET, for the one question quiet must not answer: did this review
+        # FIND anything? Quiet decides what is posted; a run whose P2s it muted
+        # has still found them, and the summary says so. Reading the posted file
+        # to declare a run clean put "No findings" and a 👍 on a pull request
+        # whose own summary listed the findings three lines above.
+        RESULT_FOUND: ${{ runner.temp }}/result-reported.json
       with:
         github-token: ${{ inputs.github-token }}
         script: |
@@ -1166,13 +1218,79 @@ runs:
           // Attribution for the Apache-2.0 engine lives in NOTICE + README, not
           // in every comment — OCR is consumed as a package, not redistributed.
           const footer =
-            `\n\n<sub>Reviewed via [OrcaRouter](https://orcarouter.ai) — ` +
+            `\n\n<sub>[OrcaCode Review](https://www.orcarouter.ai/code-review) — ` +
             `Route Smarter. Ship Safer. Spend Less.</sub>`;
 
-          if (comments.length === 0) {
-            // Clean run: no separate notice — the upserted summary comment
-            // (next step) already reports the clean state without adding a
-            // new timeline entry on every push.
+          // THE THUMB IS NOT SETTLED HERE. This step is one of several ways a run
+          // ends — settings skip, oversized diff, a guardrail block, an engine
+          // failure, a rejected post — and a marker only this step maintains is
+          // one the other endings leave stale, endorsing a head nobody reviewed.
+          // It is settled in the always() step near the end of this file, which
+          // sees every ending. All this step does is record what it concluded.
+          const markClean = () => {
+            try {
+              fs.writeFileSync(process.env.RUNNER_TEMP + '/cr-clean', '1');
+            } catch (e) {
+              console.log('could not record the clean verdict (non-fatal):', e.message);
+            }
+          };
+
+          // DID THE REVIEW FIND ANYTHING — not "is there anything left to post".
+          // `comments` is the quiet-filtered list, so a quiet workspace whose
+          // findings were all P2 arrives here empty while its summary reports
+          // them. Declaring that clean contradicts the summary on the same PR.
+          let foundCount = comments.length;
+          try {
+            const found = JSON.parse(fs.readFileSync(process.env.RESULT_FOUND, 'utf8'));
+            foundCount = (found.comments || []).length;
+          } catch (e) {
+            // Unreadable: fall back to what we can see rather than guess clean.
+          }
+
+          // MUTED IS NOT CLEAN, AND IT IS NOT A REVIEW EITHER. Quiet drops every
+          // reported P2, so a run can have found things and still have nothing
+          // to post. Falling through built a review from an empty array —
+          // "Found **0** issues in this PR: ." — beside a description summary
+          // that listed the muted findings. Quiet's own promise is silence, so
+          // this posts nothing AND records no clean verdict: the run is not
+          // clean, it is quiet.
+          if (foundCount > 0 && comments.length === 0) {
+            console.log('quiet mode muted every finding; posting nothing');
+            return;
+          }
+
+          if (foundCount === 0) {
+            // A CLEAN RUN SAYS SO. This used to return silently and leave the
+            // pinned summary to report it — but the summary sits in the PR
+            // description, folded and above the fold only if you scroll, so a
+            // reviewer who asked for a review got no visible answer at all. The
+            // hosted reviewer posts this same sentence; two paths reviewing one
+            // repository should not disagree about what "nothing to flag" looks
+            // like.
+            //
+            // Still one timeline entry per push, which was the original worry.
+            // That is what the 👍 is for: the entry states the result once, and
+            // the reaction is the at-a-glance version that updates in place.
+            const cleanBody =
+              `## 🐳 ${brand}\n\n` +
+              `✅ **No findings** — nothing to flag in this PR. Great work!`;
+            try {
+              await github.rest.pulls.createReview({
+                ...repo, pull_number: num, commit_id: sha,
+                body: cleanBody + footer, event: 'COMMENT',
+              });
+            } catch (e) {
+              console.log('Clean review failed, posting as a comment:', e.message);
+              await github.rest.issues.createComment({
+                ...repo, issue_number: num, body: cleanBody + footer,
+              });
+            }
+            // AFTER ONE OF THEM SUCCEEDED. Written first, a run whose review AND
+            // its comment fallback both failed still told the always() step it
+            // was clean — so the 👍 endorsed a verdict that was never published.
+            // A throw from the fallback skips this and the thumb is withdrawn,
+            // which is the right answer for a run that could not say anything.
+            markClean();
             return;
           }
 
@@ -1200,7 +1318,12 @@ runs:
             // 1) The model sometimes writes its own **bold** lead — use it verbatim.
             const lead = raw.match(/^\*\*(.+?)\*\*\s+([\s\S]+)$/);
             if (lead) {
-              return `${badge} **${mk(lead[1])}**\n\n${lead[2].replace(/\*\*/g, '').trim()}`;
+              // THE BODY KEEPS ITS ASTERISKS. Stripping every `**` was tolerable
+              // while only some findings took this branch; the rubric now asks
+              // for a bold title on all of them, so every explanation would pass
+              // through it — and `x ** 2` or `src/**/*.js` in a finding came out
+              // corrupted. Only the title's own markup is removed, by mk().
+              return `${badge} **${mk(lead[1])}**\n\n${lead[2].trim()}`;
             }
             // 2) Else split only when the first sentence is short enough to title.
             const rest = raw.replace(/\*\*/g, '');
@@ -1265,9 +1388,19 @@ runs:
       uses: actions/github-script@v7
       env:
         PR_NUMBER: ${{ steps.pr.outputs.number }}
-        # Deliberately the UNfiltered result: the summary shows TRUE counts
-        # (its quiet-mode note explains why fewer P2s appear inline).
-        RESULT: ${{ runner.temp }}/result.json
+        # THE FILTERED COPY, the same one the inline comments come from.
+        #
+        # This used to be the raw result, deliberately, so the summary could show
+        # "true counts". That reads as honesty and lands as a contradiction: a
+        # workspace on report_on=P0,P1 saw two P1s inline and a description
+        # pinned above them announcing P2s and P3s that appear nowhere in the
+        # review. The reader has no way to tell which surface to believe, and
+        # the one they can act on is the one they were shown.
+        #
+        # Two surfaces of one review must not disagree. The gate and the run
+        # report still read $RESULT — those MEASURE and ENFORCE, and a display
+        # preference must never move them. This one is display.
+        RESULT: ${{ runner.temp }}/result-reported.json
         PREV_BODY: ${{ runner.temp }}/prev-summary.md
         SUMMARY_SCRIPT: ${{ github.action_path }}/scripts/summary-comment.mjs
         INJECT_SCRIPT: ${{ github.action_path }}/scripts/inject-summary.mjs
@@ -1341,7 +1474,19 @@ runs:
           // Mode notes: exhaustive pass count (renders only when > 1) and the
           // quiet-mode explainer next to the true counts.
           args.push('--passes', process.env.PASSES || '1');
-          if (process.env.QUIET === 'true') args.push('--quiet');
+          // ONLY WHEN THERE IS STILL A P2 TO EXPLAIN. The note reads "quiet mode:
+          // P2 shown in summary only", which is true while the summary carries
+          // P2s the inline comments do not. Now that the summary reads the
+          // report_on-filtered file, a workspace excluding P2 there has a summary
+          // with zero P2s — and the note would sit under a 0 explaining why it is
+          // shown. The flag describes a difference; with no difference, no note.
+          const summaryHasP2 = (() => {
+            try {
+              const r = JSON.parse(fs.readFileSync(process.env.RESULT, 'utf8'));
+              return (r.comments || []).some((c) => /^\s*\[?P2\]?/i.test(String(c.content || '')));
+            } catch (e) { return true; }  // unreadable: keep the old behaviour
+          })();
+          if (process.env.QUIET === 'true' && summaryHasP2) args.push('--quiet');
 
           const summaryMd = execFileSync('node', args, { encoding: 'utf8' });
           // Preserve the author's description text; only the marker region changes.
@@ -1397,6 +1542,119 @@ runs:
           --url "$ORCAROUTER_URL" \
           --engine-version "$ENGINE_VERSION"
 
+    # The 👀 said "I am looking at this". Once the review has been posted — or
+    # has failed and said so — that is no longer true, and a reaction nobody
+    # removes stops carrying information: every PR the reviewer has ever touched
+    # wears one for ever, so the operator cannot tell an in-flight run from a
+    # finished one. Placing it and leaving it is the same as not placing it.
+    #
+    # always(), because a FAILED run has to clear it too. That is the case where a
+    # stale pair of eyes is worst: it promises a review that is not coming.
+    #
+    # Only OUR OWN reaction. The endpoint deletes by id, so this lists first and
+    # removes the one whose user matches the token's identity — a maintainer who
+    # also reacted 👀 keeps theirs.
+    #
+    # Best-effort throughout: `|| true` on the deletes and no `set -e`
+    # dependency, because failing a run over a leftover emoji would trade a
+    # cosmetic problem for a real one.
+    - name: Settle the review reactions
+      if: always()
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ github.repository }}
+        PR_NUMBER: ${{ steps.pr.outputs.number }}
+        HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+        EVENT_NAME: ${{ github.event_name }}
+        COMMENT_ID: ${{ github.event.comment.id }}
+      run: |
+        # ONE GATE FOR BOTH REACTIONS: is this token an app?
+        #
+        # GitHub cannot be asked "which reaction did I create" after the fact, so
+        # the only handle is the author — and when github-token is a maintainer's
+        # PAT, their manual 👀 or 👍 and ours have the same author. Three rounds
+        # of review went into narrowing that predicate with recorded ids and
+        # status codes; every version needed a parse, and the parses were where
+        # the bugs were. Declining at the boundary removes the question instead
+        # of answering it more precisely each time.
+        #
+        # The review body and the summary say everything the reactions would.
+        ME_TYPE=$(gh api user --jq .type 2>/dev/null || echo "Bot")
+        if [ "$ME_TYPE" != "Bot" ]; then
+          echo "github-token belongs to a user, not an app; leaving reactions alone"
+          exit 0
+        fi
+        ME=$(gh api user --jq .login 2>/dev/null || echo "github-actions[bot]")
+
+        # ------------------------------------------------------------------
+        # 👀 — it said "I am looking at this", and the run has stopped looking.
+        clear_eyes() {
+          ids=$(gh api "$1" --paginate \
+            --jq '.[] | select(.content=="eyes") | select(.user.login=="'"$ME"'") | .id' \
+            2>/dev/null || true)
+          for id in $ids; do
+            gh api -X DELETE "$1/$id" >/dev/null 2>&1 \
+              && echo "cleared 👀 -> $1/$id" || echo "warning: could not clear 👀 (non-fatal)"
+          done
+        }
+        if [ -n "${PR_NUMBER:-}" ]; then
+          clear_eyes "repos/$REPO/issues/$PR_NUMBER/reactions"
+        fi
+        if [ "$EVENT_NAME" = "issue_comment" ] && [ -n "${COMMENT_ID:-}" ]; then
+          clear_eyes "repos/$REPO/issues/comments/$COMMENT_ID/reactions"
+        fi
+
+        # ------------------------------------------------------------------
+        # THE 👍, SETTLED WHERE EVERY ENDING IS VISIBLE.
+        #
+        # It used to be added inside the posting step, which is one ending out of
+        # several: a settings skip, an oversized diff, a guardrail block, an
+        # engine failure or a rejected post all finish without going near it. A
+        # thumb only that step maintains is one every other ending leaves in
+        # place, endorsing a head nobody reviewed. This step runs on always().
+        #
+        THUMBS="repos/$REPO/issues/$PR_NUMBER/reactions"
+        MINE=$(gh api "$THUMBS" --paginate \
+          --jq '.[] | select(.content=="+1") | select(.user.login=="'"$ME"'") | .id' \
+          2>/dev/null || true)
+        # ONLY IF THIS RUN STILL DESCRIBES THE PR. Nothing serialises invocations,
+        # so an older clean run can finish AFTER a newer findings/skipped/failed
+        # run has withdrawn the thumb — and its local marker would put it back,
+        # endorsing a head that run never saw.
+        #
+        # Withdrawal needs no such check and deliberately does not have one: a
+        # thumb removed by a stale run is re-added by the current one on its own
+        # completion, so the failure direction is a moment without a 👍 rather
+        # than a 👍 over unreviewed code.
+        # AN UNCONFIRMED HEAD COUNTS AS MOVED. Adding on a failed lookup would
+        # contradict the rule this check exists for — the thumb must not endorse
+        # a head this run did not review, and "could not tell" is not evidence
+        # that it did. A clean run that loses the race or the API call simply
+        # goes without, and the next run puts it back.
+        CURRENT_SHA=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq .head.sha 2>/dev/null || echo "")
+        if [ -f "$RUNNER_TEMP/cr-clean" ] && [ "$CURRENT_SHA" != "$HEAD_SHA" ]; then
+          echo "cannot confirm this run still describes the PR head (${HEAD_SHA} vs ${CURRENT_SHA:-unknown}); leaving 👍 alone"
+          exit 0
+        fi
+        if [ -f "$RUNNER_TEMP/cr-clean" ]; then
+          # Clean, and only this run's own marker says so. Adding when one is
+          # already there is a no-op at the API, so this is safe to repeat.
+          if [ -z "$MINE" ]; then
+            gh api -X POST "$THUMBS" -f content=+1 >/dev/null 2>&1 \
+              && echo "👍 -> $THUMBS" || echo "warning: could not add 👍 (non-fatal)"
+          else
+            echo "👍 already present"
+          fi
+        else
+          # Findings, a skip, or a failure — in every one of those a 👍 from an
+          # earlier head is now false.
+          for id in $MINE; do
+            gh api -X DELETE "$THUMBS/$id" >/dev/null 2>&1 \
+              && echo "withdrew 👍 -> $THUMBS/$id" || echo "warning: could not withdraw 👍 (non-fatal)"
+          done
+        fi
+
     - name: Clean up engine output
       if: always()
       shell: bash
@@ -1415,5 +1673,6 @@ runs:
           "$RUNNER_TEMP/policy-block.json" \
           "$RUNNER_TEMP/pr.diff" "$RUNNER_TEMP/diff-guard.json" "$RUNNER_TEMP/prev-summary.md" \
           "$RUNNER_TEMP/wallclock-timeout" "$RUNNER_TEMP/cr-usage.jsonl" \
+          "$RUNNER_TEMP/cr-clean" \
           "$RUNNER_TEMP/result.l1.json" "$RUNNER_TEMP/result.l2.json" \
           "$RUNNER_TEMP/result-extra.l1.json" "$RUNNER_TEMP/result-extra.l2.json"

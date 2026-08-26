@@ -1,0 +1,133 @@
+# Mark versions of `@orcarouter/code-review` as retired on npm.
+#
+# `npm deprecate` is the tool to reach for when a version should stop being
+# installed. It leaves the tarball in place — anyone pinned to it keeps working —
+# and prints a warning on every install, which is the outcome an unpublish only
+# approximates by breaking them instead.
+#
+# It lives in CI because the credential lives in CI: the `NPM_TOKEN` secret is
+# the only one this project has. Unpublishing cannot be done this way (npm
+# refuses a granular token that bypasses 2FA — see RELEASE.md); deprecation is
+# the part of the job that can be automated, so it is.
+#
+# Reversible, unlike everything else that touches the registry: dispatching with
+# an empty `message` clears the flag. That is npm's own convention and the reason
+# this workflow is safe to keep while the unpublish one was not.
+#
+# One guard: the version in `package.json` is refused. Deprecating the release
+# that `dist-tags.latest` points at puts a warning on every single install of
+# the package, which looks like an outage and is one click away.
+#
+# Inputs reach the shell through `env`, never `${{ }}` inside a `run` block —
+# this job holds a publish token.
+
+name: Deprecate
+
+concurrency:
+  group: publish-npm # never race the publish job
+  cancel-in-progress: false
+
+on:
+  workflow_dispatch:
+    inputs:
+      versions:
+        description: "Versions to mark, space-separated (e.g. 1.4.0 1.5.0)"
+        required: true
+        type: string
+      message:
+        description: "Warning shown on install. Empty clears the flag."
+        required: false
+        default: "No longer supported — install @orcarouter/code-review@latest"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  deprecate:
+    runs-on: ubuntu-latest
+    env:
+      VERSIONS: ${{ inputs.versions }}
+      MESSAGE: ${{ inputs.message }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Guard
+        run: |
+          set -euo pipefail
+          PKG_NAME=$(node -p "require('./package.json').name")
+          PKG_LIVE=$(node -p "require('./package.json').version")
+          echo "PKG_NAME=$PKG_NAME" >> "$GITHUB_ENV"
+          echo "PKG_LIVE=$PKG_LIVE" >> "$GITHUB_ENV"
+
+          for v in $VERSIONS; do
+            if [ "$v" = "$PKG_LIVE" ]; then
+              echo "::error::$v is the version in package.json — deprecating it warns on every install. Refusing."
+              exit 1
+            fi
+          done
+          if [ -z "${MESSAGE:-}" ]; then
+            echo "::notice::CLEARING the deprecation flag on: $VERSIONS"
+          else
+            echo "::notice::marking $VERSIONS — \"$MESSAGE\""
+          fi
+
+      - name: Deprecate
+        run: |
+          set -uo pipefail
+          FAILED=""
+          for v in $VERSIONS; do
+            echo "--- $PKG_NAME@$v"
+            if npm deprecate "$PKG_NAME@$v" "$MESSAGE"; then
+              echo "::notice::marked $PKG_NAME@$v"
+            else
+              # One version's refusal must not strand the rest unmarked.
+              echo "::warning::could not mark $PKG_NAME@$v"
+              FAILED="$FAILED $v"
+            fi
+          done
+          echo "FAILED=${FAILED# }" >> "$GITHUB_ENV"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # The packument is what `npm install` reads, and an anonymous read is the
+      # only one that proves what a stranger sees. `npm deprecate` exiting 0 is
+      # not evidence — same reason publish.yml has a gate 6.
+      - name: Verify the registry
+        run: |
+          set -euo pipefail
+          sleep 15
+          SLUG=$(node -p "encodeURIComponent(process.env.PKG_NAME)")
+          curl -fsSL "https://registry.npmjs.org/$SLUG" -o packument.json
+          node -e '
+            const p = require("./packument.json");
+            const live = process.env.PKG_LIVE;
+            const want = (process.env.MESSAGE || "").length > 0;
+            let bad = 0;
+            for (const v of (process.env.VERSIONS || "").split(/\s+/).filter(Boolean)) {
+              const meta = p.versions[v];
+              if (!meta) { console.log(`${v}: not on the registry`); continue; }
+              const got = typeof meta.deprecated === "string" && meta.deprecated.length > 0;
+              console.log(`${v}: ${got ? `deprecated — "${meta.deprecated}"` : "not deprecated"}`);
+              if (got !== want) bad++;
+            }
+            const liveMeta = p.versions[live];
+            if (liveMeta && liveMeta.deprecated) {
+              console.error(`::error::${live} is the live release and it is deprecated`);
+              process.exit(1);
+            }
+            if (bad) {
+              console.error(`::error::${bad} version(s) did not end up in the requested state`);
+              process.exit(1);
+            }
+          '
+
+          if [ -n "${FAILED:-}" ]; then
+            echo "::error::these versions could not be marked: $FAILED"
+            exit 1
+          fi

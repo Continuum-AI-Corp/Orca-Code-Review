@@ -83,18 +83,19 @@ Fix by pinning a newer tag or an immutable commit SHA instead of `@v1`.
 
 ## Every PR gets two sets of comments
 
-The Action and the GitHub App are both installed. They review the same pull
-requests independently, so the repo pays twice and the author reads everything
-twice.
+Something besides this workflow is also reviewing. Most often the OrcaCode
+Review **GitHub App** is installed on the repo — this skill does not install it,
+but somebody may have added it directly. Both review the same pull requests, so
+the repo pays twice and the author reads everything twice.
 
 | Check | How |
 | --- | --- |
-| Action present | `git show origin/<default>:.github/workflows/orca-code-review.yml` |
-| App present | A bot review, or a check on a recent PR that no workflow in the repo produces |
+| This workflow | `git show origin/<default>:.github/workflows/orca-code-review.yml` |
+| Something else | A bot review, or a check on a recent PR that no workflow in the repo produces |
 
-Keep one. Removing the Action is the reversible half — delete the workflow (drop
-the required check first). Removing the App means revoking its installation on
-GitHub, which is a permission change someone with admin rights has to make.
+Keep one. Removing the workflow is the reversible half — delete it, dropping the
+required check first. Revoking an App installation is a permission change only
+someone with admin rights can make.
 
 ## Merges are not actually blocked
 

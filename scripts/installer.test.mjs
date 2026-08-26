@@ -213,3 +213,43 @@ test("the skill closes by listing the key as an outstanding user action", () => 
 test("the skill refuses to call an install complete without the secret", () => {
   assert.match(SKILL, /[Dd]o not report the\s+install as complete while the secret is missing/s);
 });
+
+// ------------------------------------------------------------ install modes ---
+
+test("the skill offers both install modes and routes between them", () => {
+  assert.match(SKILL, /## Install — GitHub App mode/);
+  assert.match(SKILL, /GitHub Action \(recommended\)/);
+  assert.match(SKILL, /https:\/\/github\.com\/apps\/orcacode-review\/installations\/new/);
+});
+
+test("App mode warns about the permission before offering the choice", () => {
+  // Walking a plain org member to an approval page they will be stopped at is
+  // the whole failure this ordering exists to avoid.
+  const pick = SKILL.slice(SKILL.indexOf("### 0. Pick the mode"), SKILL.indexOf("### 1. Preflight"));
+  assert.match(pick, /permissions\.admin/, "no repo-permission probe");
+  assert.match(pick, /memberships/, "no org-role probe");
+  assert.match(pick, /organization owner/i);
+  assert.ok(
+    pick.indexOf("admin: false") < pick.indexOf("Chose App mode?"),
+    "the cannot-approve warning must come before the routing line",
+  );
+});
+
+test("App mode never claims the install can be automated", () => {
+  const app = SKILL.slice(SKILL.indexOf("## Install — GitHub App mode"), SKILL.indexOf("## Do not install both"));
+  assert.match(app, /no REST endpoint that installs an\s+App/s);
+  // Printing the URL matters more than opening it: SSH, containers and CI have
+  // no browser, and a silent `open` leaves the user waiting on nothing.
+  assert.match(app, /never open it without printing it/i);
+  // The repo secret belongs to Action mode only.
+  assert.match(app, /No `ORCAROUTER_API_KEY` secret is needed/);
+});
+
+test("the double-install conflict is documented in both places", () => {
+  assert.match(SKILL, /## Do not install both/);
+  const trouble = fs.readFileSync(
+    new URL("../skills/setup-orca-code-review/references/troubleshooting.md", import.meta.url),
+    "utf8",
+  );
+  assert.match(trouble, /two sets of comments/i);
+});

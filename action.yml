@@ -937,7 +937,8 @@ runs:
             # stamps x-cr-lens: judge, so the recipe's judge rule picks the model.
             #
             # Same model as before — the shipped recipe routes that rule to
-            # deepseek-v4-pro, which is what judge-model used to name. What moves is
+            # a model of its own choosing, which is what judge-model used to name
+            # directly. What moves is
             # where the choice lives, so a workspace can price its judge by editing its
             # own recipe rather than waiting for a release.
             #

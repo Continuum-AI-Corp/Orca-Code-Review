@@ -51,7 +51,7 @@ for (let i = 0; i < rest.length; i += 1) {
   }
   else if (rest[i] === "--model") modelOverride = rest[++i];
 }
-if (!file) { console.error("usage: node judge.mjs <filtered.json> [--out f] [--threshold 0.7] [--model deepseek/deepseek-v4-pro]"); process.exit(2); }
+if (!file) { console.error("usage: node judge.mjs <filtered.json> [--out f] [--threshold 0.7] [--model orcarouter/<router>]"); process.exit(2); }
 
 // Env vars first (production); config.json only as a local-harness fallback.
 let llmUrl = process.env.OCR_LLM_URL || null;

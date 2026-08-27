@@ -39,16 +39,31 @@
 # one pass — is an edit to this file in your own workspace rather than a wait for
 # an Action release.
 #
-# THE MODEL IS FREELY CHOOSABLE, and this is the line to edit. Swap in anything your
-# OrcaRouter workspace can reach (openai/gpt-5.5, anthropic/claude-opus-4-8,
-# z-ai/glm-5.1, deepseek/deepseek-v4-pro).
+# TWO CALLS, TWO LINES TO EDIT. The Action asks this router for two things, both
+# with the alias as the `model` rather than a model name:
 #
-# deepseek-v4-flash below is what setup provisions, so this file and a freshly
-# created router agree. A stronger model here costs more per review and is the single
-# highest-leverage change you can make to review quality — nothing else in this
-# recipe affects what the reviewer can see or say.
+#   the review  — carries no angle, so it takes `default:`
+#   the L2 judge — stamps `x-cr-lens: judge`, so the rule below claims it
+#
+# Swap in anything your OrcaRouter workspace can reach (openai/gpt-5.5,
+# anthropic/claude-opus-4-8, z-ai/glm-5.1, deepseek/deepseek-v4-pro). The default
+# is the single highest-leverage change you can make to review quality — nothing
+# else in this recipe affects what the reviewer can see or say.
+#
+# THE JUDGE MUST NOT NAME THE DEFAULT'S MODEL. The judge scores what the review
+# found and drops what it cannot support; on the reviewer's own model it agrees
+# with itself, so the pass goes inert while still reporting success. Deleting the
+# rule does not disable the judge — the Action runs it either way — it only sends
+# it to `default:`, which is the one place it must not go. If you change the
+# default, change the judge too.
+#
+# These values are what setup provisions, so this file and a freshly created
+# router agree.
 
 version: 1
-
+rules:
+  - id: judge
+    when: 'headers["x-cr-lens"] == "judge"'
+    use: { model: "deepseek/deepseek-v4-pro" }
 default:
   model: "deepseek/deepseek-v4-flash"

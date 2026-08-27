@@ -46,7 +46,7 @@
 #   the L2 judge — stamps `x-cr-lens: judge`, so the rule below claims it
 #
 # Swap in anything your OrcaRouter workspace can reach (openai/gpt-5.5,
-# anthropic/claude-opus-4-8, z-ai/glm-5.1, deepseek/deepseek-v4-pro). The default
+# anthropic/claude-opus-4-8, z-ai/glm-5.1, z-ai/glm-5.3). The default
 # is the single highest-leverage change you can make to review quality — nothing
 # else in this recipe affects what the reviewer can see or say.
 #
@@ -64,6 +64,6 @@ version: 1
 rules:
   - id: judge
     when: 'headers["x-cr-lens"] == "judge"'
-    use: { model: "deepseek/deepseek-v4-pro" }
+    use: { model: "z-ai/glm-5.3" }
 default:
-  model: "deepseek/deepseek-v4-flash"
+  model: "deepseek/deepseek-v4-flash-0731"

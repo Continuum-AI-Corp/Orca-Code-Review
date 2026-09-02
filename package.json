@@ -12,6 +12,10 @@
   "files": [
     "bin/",
     "skills/",
+    "rules/",
+    "vendor/",
+    "scripts/severity.mjs",
+    "scripts/postfilter.mjs",
     "NOTICE"
   ],
   "scripts": {

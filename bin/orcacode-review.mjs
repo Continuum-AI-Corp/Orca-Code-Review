@@ -34,10 +34,13 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
 import { SKILL_PLATFORMS, POPULAR_PLATFORM_IDS, findPlatform, detectPlatforms, resolveTargets } from "./platforms.mjs";
-import { installTree, STATUS } from "./skill-tree.mjs";
+import { installTree, retireLegacy, STATUS } from "./skill-tree.mjs";
 import { LANGUAGES, makeT, detectLanguage, parseLanguage } from "./i18n.mjs";
 import { renderBanner } from "./banner.mjs";
 import * as tui from "./prompt.mjs";
+import { cmdReviewPlan, cmdReviewSubmit, cmdReviewConfig } from "./review.mjs";
+import { repoRoot } from "./harness.mjs";
+import { loadLocalConfig } from "./localconfig.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = path.resolve(HERE, "..");
@@ -46,7 +49,28 @@ const SECRET = "ORCAROUTER_API_KEY";
 const ACTION_REF = "Continuum-AI-Corp/orca-code-review@v1";
 const CONSOLE_TOKENS = "https://www.orcarouter.ai/console/token";
 const CONSOLE_APPS = "https://www.orcarouter.ai/";
-const SKILL_NAME = "setup-orca-code-review";
+// Two skills ship in this package and the bare command installs both.
+//
+// They teach opposite halves of the same product: `setup-` tells an agent how
+// to wire up the GitHub Action (OrcaRouter reviews every PR in CI), `run-` tells
+// it how to BE the reviewer itself, right here, against the harness surface in
+// harness.mjs — no Action, no gateway, no API key, on whatever model the agent
+// already has. Installing only the first would leave the second undiscoverable,
+// and a capability an agent is never told about is one that does not ship.
+const SKILLS = Object.freeze(["orca-review-action", "orca-review"]);
+// Names these skills shipped under before. Installing the new name removes the
+// old directory beside it — see retireLegacy for the guard on whose it is.
+// The three ways to use the product, as the installer asks about them. A mode is
+// a set of skills; `--skill` still addresses one skill by name for scripts.
+const MODES = Object.freeze({
+  both: [...SKILLS],
+  local: ["orca-review"],
+  action: ["orca-review-action"],
+});
+const LEGACY_SKILL_NAMES = Object.freeze({
+  "orca-review": ["run-orca-code-review"],
+  "orca-review-action": ["setup-orca-code-review"],
+});
 
 // Resolved from the locale up front so every path — including an early `die()`
 // during argument parsing — has a working translator.
@@ -74,6 +98,27 @@ const fail = (s) => {
   console.error(`${red("✖")} ${s}`);
   process.exitCode = 1;
 };
+
+// Progress for a human to read along with, on stderr. `review plan` writes a
+// prompt to stdout and NOTHING else, so anything a pipe would swallow — or
+// worse, feed to a model as part of the prompt — has to go here instead.
+const note = (s) => console.error(`${dim("›")} ${s}`);
+
+// The output kit review.mjs renders through. Passing it in keeps this file the
+// single owner of colour, i18n, and exit behaviour, so the harness commands
+// cannot drift into a second house style.
+const reviewUi = () => ({
+  t,
+  language: LANG,
+  say,
+  ok,
+  warn,
+  info,
+  fail,
+  note,
+  die,
+  color: { bold, dim, red, green, yellow, cyan },
+});
 
 function die(msg, hint) {
   console.error(`${red("✖")} ${msg}`);
@@ -644,8 +689,32 @@ const homeDir = () => process.env.HOME || process.env.USERPROFILE || "";
 const lookPath = (exe) => sh(process.platform === "win32" ? "where" : "which", [exe]).ok;
 
 async function cmdSkill(argv) {
-  const source = path.join(PKG_ROOT, "skills", SKILL_NAME);
-  if (!fs.existsSync(source)) die(t("skill.missingBundle"), t("skill.missingBundleHint"));
+  // Which half of the product — asked FIRST, because the answer decides what
+  // the rest of the flow is installing. `--skill <name>` addresses one skill by
+  // name for scripts; `--mode` is the same choice in the words the question
+  // uses; unattended with neither installs both, because the two halves are
+  // one product and a user who only has "action" has no way to discover that
+  // local review exists.
+  if (argv.mode !== undefined && !MODES[argv.mode]) die(t("skill.unknownMode", argv.mode), Object.keys(MODES).join(" | "));
+  let wanted;
+  if (argv.skill) wanted = [argv.skill];
+  else if (argv.mode) wanted = MODES[argv.mode];
+  else if (ASSUME_YES || !process.stdin.isTTY) wanted = MODES.both;
+  else {
+    wanted = MODES[
+      await select(t("skill.modeQ"), [
+        { label: t("skill.modeBoth"), value: "both", recommended: true, detail: t("skill.modeBothDetail") },
+        { label: t("skill.modeLocal"), value: "local", detail: t("skill.modeLocalDetail") },
+        { label: t("skill.modeAction"), value: "action", detail: t("skill.modeActionDetail") },
+      ])
+    ];
+  }
+  for (const name of wanted) {
+    if (!SKILLS.includes(name)) die(t("skill.unknownSkill", name), SKILLS.join(" | "));
+    if (!fs.existsSync(path.join(PKG_ROOT, "skills", name))) {
+      die(t("skill.missingBundle"), t("skill.missingBundleHint"));
+    }
+  }
 
   const home = homeDir();
   // Detection always looks at the working directory, even for a global install:
@@ -698,35 +767,50 @@ async function cmdSkill(argv) {
   // keep a scratch directory with an AGENTS setup and no git.
   const gitRoot = sh("git", ["rev-parse", "--show-toplevel"], { cwd });
   const projectDir = scope === "project" && gitRoot.ok ? gitRoot.out : cwd;
-  const targets = resolveTargets({ platformIds, scope, projectDir, homeDir: home, skillName: SKILL_NAME });
 
-  const results = targets.map((target) => {
-    try {
-      return { ...target, status: installTree(source, target.path, { force: argv.force }) };
-    } catch (e) {
-      return { ...target, status: STATUS.error, error: e.message };
+  // One pass per skill. resolveTargets keys the destination on the skill name,
+  // so the platforms that share a root (Codex and both Antigravities all use
+  // `.agents`) still collapse to one write per skill without the two skills
+  // ever colliding with each other.
+  const results = [];
+  for (const skillName of wanted) {
+    const source = path.join(PKG_ROOT, "skills", skillName);
+    for (const target of resolveTargets({ platformIds, scope, projectDir, homeDir: home, skillName })) {
+      try {
+        const retired = (LEGACY_SKILL_NAMES[skillName] || []).filter((old) => retireLegacy(target.path, old));
+        results.push({ ...target, skill: skillName, retired, status: installTree(source, target.path, { force: argv.force }) });
+      } catch (e) {
+        results.push({ ...target, skill: skillName, status: STATUS.error, error: e.message });
+      }
     }
-  });
+  }
 
   closeUi();
 
   if (argv.json) {
-    say(JSON.stringify({ scope, source, results }, null, 2));
+    say(JSON.stringify({ scope, skills: wanted, results }, null, 2));
     if (results.some((r) => r.status === STATUS.error)) process.exitCode = 1;
     return;
   }
 
   say();
-  for (const r of results) {
-    const names = r.platformNames.join(", ");
-    const where = dim(path.relative(scope === "project" ? projectDir : home, r.path) || r.path);
-    switch (r.status) {
-      case STATUS.installed: ok(`${names}  ${where}`); break;
-      case STATUS.updated: ok(`${names}  ${where} ${dim(t("skill.statusUpdated"))}`); break;
-      case STATUS.unchanged: say(`${dim("·")} ${names}  ${where} ${dim(t("skill.statusUnchanged"))}`); break;
-      case STATUS.conflict: warn(`${names}  ${where} ${dim(t("skill.statusConflict"))}`); break;
-      default: fail(`${names}  ${where} — ${r.error}`);
+  for (const skillName of wanted) {
+    const forSkill = results.filter((r) => r.skill === skillName);
+    if (forSkill.length === 0) continue;
+    say(`  ${bold(skillName)}`);
+    for (const r of forSkill) {
+      const names = r.platformNames.join(", ");
+      const where = dim(path.relative(scope === "project" ? projectDir : home, r.path) || r.path);
+      const retired = r.retired?.length ? ` ${dim(t("skill.statusRetired", r.retired.join(", ")))}` : "";
+      switch (r.status) {
+        case STATUS.installed: ok(`${names}  ${where}${retired}`); break;
+        case STATUS.updated: ok(`${names}  ${where} ${dim(t("skill.statusUpdated"))}${retired}`); break;
+        case STATUS.unchanged: say(`${dim("·")} ${names}  ${where} ${dim(t("skill.statusUnchanged"))}`); break;
+        case STATUS.conflict: warn(`${names}  ${where} ${dim(t("skill.statusConflict"))}`); break;
+        default: fail(`${names}  ${where} — ${r.error}`);
+      }
     }
+    say();
   }
 
   if (results.some((r) => r.status === STATUS.conflict)) {
@@ -745,6 +829,7 @@ function handoff(results) {
   say(bold(t("skill.handoffTitle")));
   say();
   say(`    ${cyan(t("skill.handoffPrimary"))}`);
+  say(`    ${cyan(t("skill.handoffReview"))}`);
   say();
   say(dim(t("skill.handoffMore")));
   for (const [phrase, what] of [
@@ -836,6 +921,9 @@ ${bold(t("usage.commands"))}
   uninstall        ${t("usage.cmdUninstall")}
   skill install    ${t("usage.cmdSkillInstall", n)}
   skill list       ${t("usage.cmdSkillList")}
+  review plan      ${t("usage.cmdReviewPlan")}
+  review submit    ${t("usage.cmdReviewSubmit")}
+  review config    ${t("usage.cmdReviewConfig")}
 
 ${bold(t("usage.options"))}
   --yes, -y        ${t("usage.optYes")}
@@ -845,12 +933,29 @@ ${bold(t("usage.options"))}
   --no-banner      ${t("usage.optNoBanner")}
   --scope <s>      ${t("usage.optScope")}
   --platform <id>  ${t("usage.optPlatform")}
+  --mode <m>       ${t("usage.optMode")}
+  --skill <name>   ${t("usage.optSkill")}
   --help, -h       ${t("usage.optHelp")}
   --version, -v    ${t("usage.optVersion")}
 
+${bold(t("usage.reviewOptions"))}
+  --pr <number>    ${t("usage.optPr")}
+  --from <ref>     ${t("usage.optFrom")}
+  --to <ref>       ${t("usage.optTo")}
+  --commit, -c     ${t("usage.optCommit")}
+  --worktree       ${t("usage.optWorktree")}
+  --background, -b ${t("usage.optBackground")}
+  --block-on <s>   ${t("usage.optBlockOn")}
+  --format <f>     ${t("usage.optFormat")}
+  --fail-on-block  ${t("usage.optFailOnBlock")}
+
 ${bold(t("usage.examples"))}
   npx @orcarouter/code-review --platform claude --platform codex --yes
+  npx @orcarouter/code-review --mode local --scope global --platform claude --yes
   npx @orcarouter/code-review skill list
+  npx @orcarouter/code-review review plan --pr 556
+  npx @orcarouter/code-review review plan --from main --to HEAD
+  npx @orcarouter/code-review review submit .orcacode-review/result.json
   npx @orcarouter/code-review doctor
 
 ${bold(t("usage.docs"))}  https://github.com/Continuum-AI-Corp/orca-code-review`);
@@ -871,6 +976,37 @@ function parse(args) {
     else if (a.startsWith("--lang=")) out.lang = a.slice(7);
     else if (a === "--scope") out.scope = args[++i];
     else if (a.startsWith("--scope=")) out.scope = a.slice(8);
+    else if (a === "--mode") out.mode = args[++i];
+    else if (a.startsWith("--mode=")) out.mode = a.slice(7);
+    else if (a === "--skill") out.skill = args[++i];
+    else if (a.startsWith("--skill=")) out.skill = a.slice(8);
+    // `review` range selection, named to match `ocr delegate` so anyone who
+    // knows one already knows the other.
+    else if (a === "--from") out.from = args[++i];
+    else if (a.startsWith("--from=")) out.from = a.slice(7);
+    else if (a === "--to") out.to = args[++i];
+    else if (a.startsWith("--to=")) out.to = a.slice(5);
+    else if (a === "--format") out.format = args[++i];
+    else if (a.startsWith("--format=")) out.format = a.slice(9);
+    else if (a === "--md" || a === "--markdown") out.format = "md";
+    else if (a === "--pr") out.pr = args[++i];
+    else if (a.startsWith("--pr=")) out.pr = a.slice(5);
+    else if (a === "--commit" || a === "-c") out.commit = args[++i];
+    else if (a.startsWith("--commit=")) out.commit = a.slice(9);
+    else if (a === "--worktree" || a === "--workspace") out.worktree = true;
+    else if (a === "--background" || a === "-b") out.background = args[++i];
+    else if (a.startsWith("--background=")) out.background = a.slice(13);
+    else if (a === "--block-on") out.blockOn = args[++i];
+    else if (a.startsWith("--block-on=")) out.blockOn = a.slice(11);
+    // Opt-in for a script that wants the verdict as a process status — a hook, a
+    // CI step, a `submit && push`. Off by default: the local harness exists to
+    // tell an agent what the bugs are, and an agent reads the report, not the
+    // exit code. Its shell tool labels any non-zero exit "Error", which turned a
+    // working review into an apparent crash, twice, in front of a real user.
+    else if (a === "--fail-on-block") out.failOnBlock = true;
+    // Escape hatch for a harness that has already verified its own positions,
+    // or is submitting a result it built without a plan.
+    else if (a === "--no-postfilter") out.postfilter = false;
     // Repeatable, matching orcadub: --platform claude --platform codex.
     // A comma-separated list is also accepted because people type it anyway.
     else if (a === "--platform" || a === "--platforms") pushPlatforms(out, args[++i]);
@@ -901,6 +1037,13 @@ async function main() {
       // user's locale, so their own language is still the right one to use.
       die(t("common.unknownLanguage", argv.lang), t("common.unknownLanguageHint"));
     }
+  } else if (argv._[0] === "review") {
+    // The repo may pin a language in .orcacode-review.json; it outranks the
+    // locale and yields to --lang. An invalid file is left for the command to
+    // report properly — here it simply does not get a vote.
+    const root = repoRoot(process.cwd());
+    const cfg = root ? loadLocalConfig(root) : null;
+    if (cfg?.ok && cfg.config.language) setLanguage(cfg.config.language);
   }
 
   if (argv.help) return usage();
@@ -938,6 +1081,17 @@ async function main() {
     case "check": return cmdDoctor();
     case "uninstall":
     case "remove": return cmdUninstall();
+    // The harness surface. `review` on its own is ambiguous between the two
+    // halves — planning a review and handing one back are different acts with
+    // different exit codes — so the sub-verb is required rather than guessed.
+    case "review": {
+      const sub = argv._[1];
+      if (sub === "plan") return cmdReviewPlan(argv, reviewUi());
+      if (sub === "submit") return cmdReviewSubmit(argv, reviewUi());
+      if (sub === "config") return cmdReviewConfig(argv, reviewUi());
+      die(t("common.unknownCommand", sub ? `review ${sub}` : "review"), "review plan | review submit | review config");
+      return;
+    }
     case "skill": {
       // `skill`, `skill install`, `skill list` — the sub-verb is optional so the
       // bare form keeps working for anyone who learned it before `list` existed.

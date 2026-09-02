@@ -259,14 +259,14 @@ test("no temp files survive an install", () => {
 test("the bundled skill is a valid Agent Skill for every host", () => {
   // Codex, OpenCode, and Claude Code all require exactly `name` + `description`
   // in the frontmatter, and `name` must equal the directory name.
-  const dir = new URL("../skills/setup-orca-code-review/", import.meta.url);
+  const dir = new URL("../skills/orca-review-action/", import.meta.url);
   const text = fs.readFileSync(new URL("SKILL.md", dir), "utf8");
   const frontmatter = text.match(/^---\n([\s\S]*?)\n---\n/);
   assert.ok(frontmatter, "SKILL.md has no YAML frontmatter");
 
   const name = frontmatter[1].match(/^name:\s*(\S+)/m);
   const description = frontmatter[1].match(/^description:\s*(.+)/m);
-  assert.equal(name?.[1], "setup-orca-code-review");
+  assert.equal(name?.[1], "orca-review-action");
   assert.ok(description, "SKILL.md has no description");
   assert.ok(description[1].length <= 1024, "description exceeds the 1024-char limit hosts enforce");
   assert.match(name[1], /^[a-z0-9]+(-[a-z0-9]+)*$/, "name must be lowercase with single hyphens");

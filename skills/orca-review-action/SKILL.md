@@ -1,5 +1,5 @@
 ---
-name: setup-orca-code-review
+name: orca-review-action
 description: Set up, reconfigure, troubleshoot, or remove OrcaCode Review — AI pull-request review powered by OrcaRouter — in a GitHub repository. Handles the whole lifecycle end to end without asking the user to run a CLI. Use whenever the user mentions OrcaCode Review, OrcaRouter code review, "@orcarouter code review", or /orcacode-review, and whenever they ask to set up AI code review on a repo, add the orca-code-review action, change which severities block merges, find out why a review did not run or did not post findings, or take the review workflow back out.
 ---
 

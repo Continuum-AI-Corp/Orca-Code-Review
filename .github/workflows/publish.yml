@@ -127,7 +127,7 @@ jobs:
               "bin/orcacode-review.mjs",
               "bin/platforms.mjs",
               "bin/i18n.mjs",
-              "skills/setup-orca-code-review/SKILL.md",
+              "skills/orca-review-action/SKILL.md",
             ];
             const missing = required.filter(f => !files.includes(f));
             if (missing.length) {

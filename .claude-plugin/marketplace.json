@@ -12,13 +12,14 @@
     {
       "name": "orca-code-review",
       "source": "./",
-      "description": "Set up, reconfigure, troubleshoot, and remove OrcaCode Review — AI pull-request review powered by OrcaRouter — in any GitHub repository.",
+      "description": "Review code changes locally with your own agent as the engine, and set up, reconfigure, troubleshoot, or remove OrcaCode Review — AI pull-request review powered by OrcaRouter — in any GitHub repository.",
       "category": "code-review",
       "keywords": [
         "code-review",
         "github-actions",
         "ci",
-        "pull-request"
+        "pull-request",
+        "local-review"
       ]
     }
   ]

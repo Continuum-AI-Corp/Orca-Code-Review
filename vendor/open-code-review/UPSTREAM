@@ -1,0 +1,24 @@
+Vendored from alibaba/open-code-review, unmodified.
+
+  repository  https://github.com/alibaba/open-code-review
+  tag         v1.11.2
+  commit      96306531fae4d29fc3cc84895493dc28dd8a7773
+  license     Apache-2.0 (LICENSE in this directory)
+  taken       2026-09-02
+
+Files, and where they live upstream:
+
+  system_rules.json              internal/config/rules/system_rules.json
+  rule_docs/*.md                 internal/config/rules/rule_docs/
+  supported_file_types.json      internal/config/allowlist/supported_file_types.json
+  default_exclude_patterns.json  internal/config/allowlist/default_exclude_patterns.json
+
+These are DATA: the per-language review checklists, the path -> checklist map,
+the reviewable-extension allowlist, and the default exclude globs. The logic
+that reads them is a port, not a copy — see bin/selection.mjs, which names the
+Go files it was derived from.
+
+Do not edit the files in this directory. To update, re-copy from a newer tag
+and change the tag/commit above. Apache-2.0 requires that a modified file be
+marked as modified; keeping them byte-identical to upstream is what lets this
+notice stay true.

@@ -268,7 +268,7 @@ its own plugin marketplace:
 
 The plugin is served from the repo's **default branch**, not from a tag — a
 change to `skills/` reaches users as soon as it lands on `main`, with no release
-step. Treat `skills/setup-orca-code-review/` as shipped surface on merge.
+step. Treat `skills/orca-review-action/` as shipped surface on merge.
 
 Three versions have to move together on a feature release: `package.json`,
 `.claude-plugin/plugin.json`, and `.claude-plugin/marketplace.json`

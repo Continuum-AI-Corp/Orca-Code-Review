@@ -1,12 +1,29 @@
 OrcaCode Review
 Copyright 2026 OrcaRouter
 
-This product orchestrates Open Code Review ("ocr"), an open-source code review
-tool by Alibaba Group, licensed under the Apache License, Version 2.0:
+This product uses Open Code Review ("ocr"), an open-source code review tool by
+Alibaba Group, licensed under the Apache License, Version 2.0:
 
     https://github.com/alibaba/open-code-review
 
-Open Code Review is installed and invoked as the LLM review engine. This product
-adds, on top of it: OrcaRouter gateway integration, a cost-tiered model cascade,
-a severity rubric (P0/P1/P2), and merge-gating. No Open Code Review source is
-modified or redistributed here — it is consumed as a published package.
+In two ways:
+
+1. The GitHub Action installs the published Open Code Review package and runs
+   it as the LLM review engine. This product adds, on top of it: OrcaRouter
+   gateway integration, a cost-tiered model cascade, a severity rubric
+   (P0/P1/P2/P3), and merge-gating.
+
+2. The local review (`review plan` / `review submit`) does NOT run Open Code
+   Review — the reviewer is the user's own coding agent. It reuses Open Code
+   Review's file-selection rules and per-language review checklists:
+
+   - vendor/open-code-review/     data copied unmodified from upstream at the
+                                  tag recorded in vendor/open-code-review/UPSTREAM,
+                                  with its LICENSE
+   - bin/selection.mjs            a JavaScript port of the matching logic, a
+                                  modified work; the Go sources it derives from
+                                  are named in its header
+
+Everything else in this repository is Copyright 2026 Continuum-AI-Corp and
+licensed under the MIT License (see LICENSE). The Apache-2.0 material above
+keeps its own license.

@@ -19,10 +19,16 @@ import {
   renderWorkflow,
   parseOverrides,
 } from "../bin/orcacode-review.mjs";
+import { retireLegacy } from "../bin/skill-tree.mjs";
 
 const CLI = fileURLToPath(new URL("../bin/orcacode-review.mjs", import.meta.url));
 
 // --------------------------------------------------------------- entry point ---
+
+// A prerelease is a real version here: test builds ship as 2.1.0-rc.N, and these
+// assertions are about the entry-point guard printing SOMETHING, not about which
+// release channel it came from.
+const SEMVER = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/;
 
 test("the CLI runs when executed through a symlink", () => {
   // npm installs a `bin` as a SYMLINK at node_modules/.bin/<name>, so argv[1]
@@ -42,13 +48,13 @@ test("the CLI runs when executed through a symlink", () => {
 
   const r = spawnSync(process.execPath, [link, "--version"], { encoding: "utf8" });
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stdout.trim(), /^\d+\.\d+\.\d+$/, "no version printed — the guard rejected the symlink");
+  assert.match(r.stdout.trim(), SEMVER, "no version printed — the guard rejected the symlink");
 });
 
 test("the CLI runs when executed by its real path", () => {
   const r = spawnSync(process.execPath, [CLI, "--version"], { encoding: "utf8" });
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stdout.trim(), /^\d+\.\d+\.\d+$/);
+  assert.match(r.stdout.trim(), SEMVER);
 });
 
 test("importing the CLI runs nothing", () => {
@@ -204,7 +210,7 @@ test("every npx invocation in the README names the real package", () => {
 // ------------------------------------------------------- skill safety rules ---
 
 const SKILL = fs.readFileSync(
-  new URL("../skills/setup-orca-code-review/SKILL.md", import.meta.url),
+  new URL("../skills/orca-review-action/SKILL.md", import.meta.url),
   "utf8",
 );
 
@@ -250,7 +256,7 @@ test("the double-review symptom is still documented", () => {
   // The App exists whether or not this skill installs it, so someone can still
   // end up with two reviewers.
   const trouble = fs.readFileSync(
-    new URL("../skills/setup-orca-code-review/references/troubleshooting.md", import.meta.url),
+    new URL("../skills/orca-review-action/references/troubleshooting.md", import.meta.url),
     "utf8",
   );
   assert.match(trouble, /two sets of comments/i);
@@ -269,7 +275,7 @@ test("the double-review symptom is still documented", () => {
 
 const readYaml = (rel) => fs.readFileSync(new URL(rel, import.meta.url), "utf8");
 const EXAMPLE = readYaml("../workflows/orca-code-review.yml");
-const TEMPLATE = readYaml("../skills/setup-orca-code-review/assets/workflow.yml");
+const TEMPLATE = readYaml("../skills/orca-review-action/assets/workflow.yml");
 
 // Strips comments and blank lines, leaving only what GitHub actually reads.
 const effective = (yaml) =>
@@ -352,4 +358,85 @@ test("the help shows the scoped package name users actually type", () => {
   for (const invocation of help.match(/npx \S+/g) ?? []) {
     assert.equal(invocation, `npx ${PKG.name}`, `stale invocation in --help: ${invocation}`);
   }
+});
+
+// ------------------------------------------------------------ renamed skills ---
+
+// run-orca-code-review became orca-review; setup-orca-code-review became
+// orca-review-action. Every machine that installed the old names has them
+// still, and two skills matching the same phrases is a coin toss per review.
+
+function skillsRoot(t) {
+  const dir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "ocr-legacy-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  return dir;
+}
+
+test("installing the new name removes our old one beside it", (t) => {
+  const root = skillsRoot(t);
+  fs.mkdirSync(path.join(root, "run-orca-code-review", "references"), { recursive: true });
+  fs.writeFileSync(path.join(root, "run-orca-code-review", "SKILL.md"), "---\nname: run-orca-code-review\ndescription: x\n---\nbody\n");
+  fs.writeFileSync(path.join(root, "run-orca-code-review", "references", "a.md"), "a");
+  assert.equal(retireLegacy(path.join(root, "orca-review"), "run-orca-code-review"), true);
+  assert.equal(fs.existsSync(path.join(root, "run-orca-code-review")), false);
+});
+
+test("a same-named directory that is not ours is left alone", (t) => {
+  const root = skillsRoot(t);
+  fs.mkdirSync(path.join(root, "run-orca-code-review"));
+  fs.writeFileSync(path.join(root, "run-orca-code-review", "SKILL.md"), "---\nname: someone-elses-skill\n---\n");
+  assert.equal(retireLegacy(path.join(root, "orca-review"), "run-orca-code-review"), false);
+  assert.equal(fs.existsSync(path.join(root, "run-orca-code-review")), true);
+
+  // No SKILL.md at all — also not ours to remove.
+  fs.mkdirSync(path.join(root, "setup-orca-code-review"));
+  fs.writeFileSync(path.join(root, "setup-orca-code-review", "notes.txt"), "keep");
+  assert.equal(retireLegacy(path.join(root, "orca-review-action"), "setup-orca-code-review"), false);
+  assert.equal(fs.existsSync(path.join(root, "setup-orca-code-review", "notes.txt")), true);
+});
+
+test("nothing to retire is a quiet false", (t) => {
+  assert.equal(retireLegacy(path.join(skillsRoot(t), "orca-review"), "run-orca-code-review"), false);
+});
+
+test("the shipped skills carry the new names and never the old", () => {
+  for (const [dir, name] of [["orca-review", "orca-review"], ["orca-review-action", "orca-review-action"]]) {
+    const text = fs.readFileSync(new URL(`../skills/${dir}/SKILL.md`, import.meta.url), "utf8");
+    assert.match(text, new RegExp(`^---\\nname: ${name}\\n`));
+    assert.ok(!/run-orca-code-review|setup-orca-code-review/.test(text), `${dir} still mentions an old name`);
+  }
+});
+
+// ------------------------------------------------------------------- --mode ---
+
+function unattended(t, ...args) {
+  const dir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "ocr-mode-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(dir, ".claude"));
+  const r = spawnSync(process.execPath, [CLI, ...args, "--scope", "project", "--platform", "claude", "--yes", "--json", "--lang", "en"], {
+    cwd: dir,
+    encoding: "utf8",
+    env: { ...process.env, NO_COLOR: "1" },
+  });
+  return { dir, r };
+}
+
+test("--mode picks the skill set: local, action, or both", (t) => {
+  assert.deepEqual(JSON.parse(unattended(t, "--mode", "local").r.stdout).skills, ["orca-review"]);
+  assert.deepEqual(JSON.parse(unattended(t, "--mode", "action").r.stdout).skills, ["orca-review-action"]);
+  assert.deepEqual(JSON.parse(unattended(t, "--mode=both").r.stdout).skills.sort(), ["orca-review", "orca-review-action"]);
+});
+
+test("unattended with no --mode installs both — one product, two halves", (t) => {
+  const { dir, r } = unattended(t);
+  assert.deepEqual(JSON.parse(r.stdout).skills.sort(), ["orca-review", "orca-review-action"]);
+  assert.ok(fs.existsSync(path.join(dir, ".claude", "skills", "orca-review", "SKILL.md")));
+  assert.ok(fs.existsSync(path.join(dir, ".claude", "skills", "orca-review-action", "SKILL.md")));
+});
+
+test("an unknown --mode is refused by name, with the choices", (t) => {
+  const { r } = unattended(t, "--mode", "remote");
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /Unknown mode "remote"/);
+  assert.match(r.stderr, /both \| local \| action/);
 });

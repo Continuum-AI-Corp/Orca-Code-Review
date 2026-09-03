@@ -128,3 +128,29 @@ function pruneEmptyDirs(root) {
     if (fs.readdirSync(abs).length === 0) fs.rmdirSync(abs);
   }
 }
+
+/**
+ * Remove a skill installed under a name this package USED to ship, next to
+ * where the renamed one is about to land. Returns true if something was removed.
+ *
+ * Renaming a skill without this leaves two copies on every machine that ever
+ * installed the old one, both matching the same user phrases — the agent then
+ * picks one at random, and the stale one wins half the time.
+ *
+ * Only OUR old skill is touched: the directory must hold a SKILL.md whose
+ * frontmatter `name:` is exactly the legacy name. A same-named directory that
+ * belongs to someone else is left where it is.
+ */
+export function retireLegacy(dest, legacyName) {
+  const legacy = path.join(path.dirname(dest), legacyName);
+  let head;
+  try {
+    head = fs.readFileSync(path.join(legacy, "SKILL.md"), "utf8").slice(0, 2048);
+  } catch {
+    return false;
+  }
+  const m = /^---\n(?:[^\n]*\n)*?name:\s*([^\n]+)\n/.exec(head);
+  if (!m || m[1].trim() !== legacyName) return false;
+  fs.rmSync(legacy, { recursive: true, force: true });
+  return true;
+}

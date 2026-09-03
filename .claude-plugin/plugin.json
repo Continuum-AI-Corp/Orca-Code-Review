@@ -1,7 +1,7 @@
 {
   "name": "orca-code-review",
-  "description": "Set up, reconfigure, troubleshoot, and remove OrcaCode Review — AI pull-request review powered by OrcaRouter — in any GitHub repository.",
-  "version": "2.0.0",
+  "description": "Review code changes locally with your own agent as the engine, and set up, reconfigure, troubleshoot, or remove OrcaCode Review — AI pull-request review powered by OrcaRouter — in any GitHub repository.",
+  "version": "2.1.0",
   "author": {
     "name": "Continuum-AI-Corp",
     "url": "https://github.com/Continuum-AI-Corp"
@@ -14,6 +14,7 @@
     "github-actions",
     "ci",
     "pull-request",
-    "orcarouter"
+    "orcarouter",
+    "local-review"
   ]
 }

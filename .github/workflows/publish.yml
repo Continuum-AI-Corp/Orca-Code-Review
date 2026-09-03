@@ -127,7 +127,20 @@ jobs:
               "bin/orcacode-review.mjs",
               "bin/platforms.mjs",
               "bin/i18n.mjs",
+              "bin/harness.mjs",
+              "bin/review.mjs",
+              "bin/selection.mjs",
+              "bin/localconfig.mjs",
+              "scripts/postfilter.mjs",
+              "scripts/severity.mjs",
+              "rules/severity-instruction.md",
+              "rules/output-shape.md",
+              "vendor/open-code-review/LICENSE",
+              "vendor/open-code-review/system_rules.json",
+              "vendor/open-code-review/rule_docs/default.md",
               "skills/orca-review-action/SKILL.md",
+              "skills/orca-review/SKILL.md",
+              "skills/orca-review/references/contract.md",
             ];
             const missing = required.filter(f => !files.includes(f));
             if (missing.length) {

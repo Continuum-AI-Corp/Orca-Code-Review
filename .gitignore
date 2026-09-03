@@ -15,5 +15,4 @@ rules/*.draft.md
 
 # raw demo recordings — the shipped cuts live in docs/, the raws stay local
 docs/demo-*-raw.mp4
-docs/tapes/*.png
 *.tgz

@@ -58,8 +58,6 @@ Your agent writes the workflow, walks you through the API key, and sets the merg
   <img src="docs/demo-setup.gif" alt="Claude Code with the orca-review-action skill: asks the merge-gate decisions, writes the workflow, hands the API key step to you" width="900">
 </p>
 
-<sub>Sped up 3× · <a href="docs/demo-setup-3x.mp4">mp4</a></sub>
-
 The same goes for everything else:
 
 | Say | It does |
@@ -79,46 +77,19 @@ The same goes for everything else:
 
 ### 36 agent platforms
 
-The same catalog the [OrcaDub MCP server](https://github.com/Continuum-AI-Corp/orcadub-mcp-server) uses, so IDs and paths match across Orca products. Detected agents are pre-ticked; `/` filters the list.
-
-```bash
-npx @orcarouter/code-review skill list                    # all 36, detected ones marked
-npx @orcarouter/code-review --platform claude,codex --yes # unattended, both modes
-npx @orcarouter/code-review --mode local --platform claude --yes   # local review only
-```
-
-### Terminal, without an agent
-
-The lifecycle is also available as plain subcommands — the skill is the front door, not the only door:
-
-```bash
-npx @orcarouter/code-review init          # write the workflow
-npx @orcarouter/code-review reconfigure   # change blocking rules, diff limits, where config lives
-npx @orcarouter/code-review doctor        # diagnose reviews that don't run or don't post
-npx @orcarouter/code-review uninstall     # remove it (drops the merge gate first)
-```
+The same catalog the [OrcaDub MCP server](https://github.com/Continuum-AI-Corp/orcadub-mcp-server) uses, so IDs and paths match across Orca products. Detected agents are pre-ticked; `/` filters the list. For CI or dotfiles, the same choices are flags (`--mode`, `--scope`, `--platform`, `--yes`) — `--help` lists them.
 
 Prefer to wire it by hand? The manual steps are below.
 
 Claude Code, Cursor, Codex, OpenCode, Windsurf, Cline, RooCode, Continue, GitHub Copilot, Gemini CLI, Amazon Q Developer, Qwen Code, Kilo Code, Auggie, Kimi Code, Kiro, Lingma, Junie, CodeBuddy Code, CoStrict, Crush, Factory Droid, iFlow, Pi, Qoder, Antigravity, Antigravity 2.0, Bob Shell, ForgeCode, Trae, Trae CN, ZCode, MimoCode, Hermes, OpenClaw, Command Code.
 
-An existing identical skill is left unchanged; an existing **different** one is preserved unless you pass `--force`. Use `--json` for structured output and `NO_COLOR` for plain text. `--mode both|local|action` picks which of the two skills to install — `orca-review` (local) and `orca-review-action` (CI); the guided flow asks, unattended defaults to both. `--skill <name>` addresses one by name.
+Two skills: `orca-review` for reviewing locally and `orca-review-action` for the GitHub Action. The installer asks which you want, or both. An existing identical skill is left unchanged; an existing **different** one is preserved unless you pass `--force`.
 
 ### Language
 
-The CLI speaks **English, Simplified Chinese, Japanese and Korean**, picked from your locale (`LC_ALL` / `LC_MESSAGES` / `LANG`). Override it per run, or pin it for good:
-
-```bash
-npx @orcarouter/code-review --lang en          # English
-npx @orcarouter/code-review --lang zh          # 简体中文
-npx @orcarouter/code-review --lang ja          # 日本語
-npx @orcarouter/code-review --lang ko          # 한국어
-export ORCACODE_LANG=ja                        # pin it
-```
+The CLI speaks **English, Simplified Chinese, Japanese and Korean**, picked from your locale (`LC_ALL` / `LC_MESSAGES` / `LANG`). The guided flow opens with a language screen; `ORCACODE_LANG=zh` pins it for good.
 
 Traditional Chinese locales (`zh-TW`, `zh-HK`) fall back to English on purpose — the vocabulary diverges enough that serving Simplified reads worse than not translating at all.
-
-Guided flows open with a language screen when `--lang` is not given. Add `--no-banner` to skip the wordmark.
 
 Menus are arrow-key driven — `↑↓` to move, `Enter` to pick. Multi-select adds `space` to toggle, `a`/`n` for all/none, and `/` to filter (`ctrl-u` clears it), which is how you find one agent among 36 without scrolling. Terminals without raw mode fall back to typing a number.
 
@@ -136,53 +107,24 @@ The Action pays a model in CI to review every PR. You can also run the **same re
   <img src="docs/demo-review.gif" alt="Claude Code with the orca-review skill reviewing a pull request by number: plan, review, submit, verdict" width="900">
 </p>
 
-<sub>Sped up 3× · <a href="docs/demo-review-3x.mp4">mp4</a></sub>
+Claude Code, Codex, Cursor, or any of the 36 platforms picks up the `orca-review` skill and becomes the reviewer. You say what to review; the skill handles the rest:
 
-Claude Code, Codex, Cursor, or any of the 36 platforms picks up the `orca-review` skill and becomes the reviewer. Two CLI commands bracket it, and they own everything that must not be left to a language model:
+| Say | It reviews |
+| --- | --- |
+| *"review my changes"* | Uncommitted work if the tree is dirty, otherwise this branch against its base |
+| *"review this branch"*, *"review that commit"* | The range you named |
+| *"review PR 556"* | That pull request — **without checking it out**. It is fetched into a private ref; your work tree stays exactly where it was. Fork PRs included |
+| *"is this safe to merge?"* | Same, and the gate answers |
 
-```bash
-npx @orcarouter/code-review review plan     # scope, rules, rubric, result contract
-#   ... your agent reviews, and writes .orcacode-review/result.json ...
-npx @orcarouter/code-review review submit   # verify positions, apply the gate, report
-```
+Behind the skill are two CLI commands your agent runs for you: `review plan` decides what is in scope — with the reasons for what is not — and hands the agent the per-language checklists, the P0–P3 rubric, and your repo's own `AGENTS.md`/`CLAUDE.md` conventions; `review submit` verifies every finding is filed on the right line, drops duplicates, applies the merge gate, and prints the report your agent relays to you. Nothing that decides what blocks is left to the model.
 
-`submit --format md` prints the verdict as markdown — grouped by file, blocking
-file first, ❌ on what stops the merge and 💬 on what does not — which is what an
-agent relays into your conversation. The default is an ANSI terminal report, and
-the markdown is saved to `.orcacode-review/report.md` either way.
+**It is the same severity contract the Action enforces** — the same `rules/severity-instruction.md`, the same position check, the same result shape. A P1 you find here is a P1 that would block there. That parity is the point: *"it passed locally"* has to mean something.
 
-`submit` exits `0` whenever the review ran, blocked or not — the verdict lives
-in the report, because an agent reads the report and its shell tool would stamp
-a non-zero exit `Error:`. Pass `--fail-on-block` from a hook or CI step that
-wants a blocked review to fail the process. An unusable result exits `2` either
-way, because a review that did not happen must never read as one that passed.
+The file selection is the engine's, without the engine: the exclusion rules and per-language checklists from [Open Code Review](https://github.com/alibaba/open-code-review) (Apache-2.0) ship inside this package, so a local review filters the same files CI would. Nothing extra to install.
 
-`plan` prints a complete review request to stdout — files in scope, what was excluded and why, per-language checklists, the full P0–P3 rubric, your repo's own `AGENTS.md`/`CLAUDE.md` conventions, and the exact JSON to write. `submit` greps each finding's quoted snippet against the tree to confirm it is filed on the right file (re-homing it if not), drops duplicates, marks what would block a merge, and reports.
+Settings that should stick live in a committed `.orcacode-review.json` — which severities block, which language to report in, paths never to review, extra checklists for parts of the tree. You do not write it by hand: after your first review in a repo the agent offers to save the settings it just used, and later *"from now on only block on P0 locally"* or *"never review docs/"* edits the right key.
 
-**It is the same severity contract the Action enforces** — the same `rules/severity-instruction.md`, the same `postfilter.mjs`, the same result shape. A P1 you find here is a P1 that would block there. That parity is the point: *"it passed locally"* has to mean something.
-
-Range selection defaults to the obvious thing and tells you what it picked — uncommitted work if the tree is dirty, otherwise this branch against its base:
-
-```bash
-npx @orcarouter/code-review review plan --worktree              # what I'm working on
-npx @orcarouter/code-review review plan --from main --to HEAD   # this branch
-npx @orcarouter/code-review review plan --pr 556                # someone else's PR
-npx @orcarouter/code-review review plan --commit <sha>          # one commit
-npx @orcarouter/code-review review submit --block-on P0         # only critical blocks
-npx @orcarouter/code-review review submit --format md           # what an agent runs
-npx @orcarouter/code-review review submit --fail-on-block       # in a hook: exit 1 if blocked
-```
-
-Settings that should stick — block on P0 only, report in Chinese, never review `docs/`, an extra checklist for `src/api/**` — go in a committed `.orcacode-review.json`; `review config` shows what applies and where each value came from, and `review config init` writes the template. Or just tell your agent "从现在起本地只挡 P0" and it edits the file.
-
-`--pr` is the one flag that talks to GitHub — it needs `gh`, and it **does not
-check the branch out**. It fetches the PR into a private ref and leaves your
-work tree exactly where it was, so you can review someone else's PR without
-putting your own work down. Fork PRs included.
-
-File selection is the engine's, without the engine: the exclusion rules and per-language checklists from [Open Code Review](https://github.com/alibaba/open-code-review) (Apache-2.0) ship inside this package, so `plan` filters the same files CI would and hands your agent the same checklist per file. Nothing extra to install.
-
-`--json` on either command gives a stable, versioned contract for scripting a harness of your own; the schema is in [`skills/orca-review/references/contract.md`](skills/orca-review/references/contract.md).
+Scripting your own harness instead of using an agent? `review plan --json` and `review submit --json` are a stable, versioned contract; [`skills/orca-review/references/contract.md`](skills/orca-review/references/contract.md) is the reference.
 
 ---
 

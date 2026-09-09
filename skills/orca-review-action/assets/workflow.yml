@@ -55,7 +55,7 @@ jobs:
           # fix-first: "P0,P1"          # exhaustive only: stop adding passes once found
           # on-oversized-diff: "fail"   # "pass" makes an oversized skip advisory
           # auto-review-authors: ""     # public repos: e.g. "OWNER,MEMBER,COLLABORATOR,CONTRIBUTOR"
-          # max-diff-kb: "512"
-          # max-diff-files: "300"
-          # timeout-minutes: "20"
+          # max-diff-kb: "5000"
+          # max-diff-files: "2000"
+          # timeout-minutes: "60"
           # report: "true"              # severity counts only — never code

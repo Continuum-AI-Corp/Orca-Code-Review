@@ -6,7 +6,7 @@
 // throwing anywhere below would fail the test), and anything unreadable fails
 // OPEN to "review" so a guard glitch can never silently disable the review.
 //
-// Limits: --max-kb (default 512) on byte size, --max-files (default 300) on
+// Limits: --max-kb (default 5000) on byte size, --max-files (default 2000) on
 // `diff --git` headers. AT a limit still reviews; only strictly-over skips.
 
 import { execFileSync } from "node:child_process";
@@ -107,26 +107,82 @@ describe("file-count threshold (--max-files)", () => {
   });
 });
 
-describe("defaults (512 KB / 300 files)", () => {
-  test("a >512 KB diff skips with no flags given", () => {
-    const out = run(["--diff", writeDiff(`diff --git a/a b/a\n+${"x".repeat(513 * 1024)}\n`)]);
+describe("defaults (5000 KB / 2000 files)", () => {
+  test("a >5000 KB diff skips with no flags given", () => {
+    const out = run(["--diff", writeDiff(`diff --git a/a b/a\n+${"x".repeat(5001 * 1024)}\n`)]);
     assert.equal(out.decision, "skip");
-    assert.match(out.reason, /over the 512 KB limit/);
+    assert.match(out.reason, /over the 5000 KB limit/);
   });
 
-  test("301 files skips, 300 reviews, with no flags given", () => {
+  test("2001 files skips, 2000 reviews, with no flags given", () => {
+    // ~90 bytes per block, so 2001 of them is ~180 KB — far under the size
+    // limit, which is what makes this a file-COUNT test and not a size one.
     let many = "";
-    for (let i = 0; i < 301; i += 1) many += fileBlock(i);
+    for (let i = 0; i < 2001; i += 1) many += fileBlock(i);
     assert.equal(run(["--diff", writeDiff(many)]).decision, "skip");
 
     let exactly = "";
-    for (let i = 0; i < 300; i += 1) exactly += fileBlock(i);
+    for (let i = 0; i < 2000; i += 1) exactly += fileBlock(i);
     assert.equal(run(["--diff", writeDiff(exactly)]).decision, "review");
   });
 
   test("a non-numeric limit falls back to its default instead of crashing", () => {
     const out = run(["--diff", writeDiff(fileBlock(1)), "--max-kb", "banana"]);
     assert.equal(out.decision, "review");
+  });
+});
+
+// THE FALLBACK AND THE DOCUMENTED DEFAULT ARE ONE NUMBER IN TWO PLACES, and
+// this pins them together. action.yml passes `--max-kb "$MAX_KB"` QUOTED, so a
+// workspace that sets `max-diff-kb: ""` reaches this script as an empty
+// argument and lands on the fallback — which means a stale number here would
+// silently enforce a limit nobody documented, and no test would notice.
+//
+// Read out of action.yml rather than restated, so editing one side without the
+// other fails here instead of in production.
+describe("the script's fallbacks match action.yml's documented defaults", () => {
+  // NEWLINES NORMALIZED, because this repo has no `.gitattributes` and
+  // `core.autocrlf` is the Windows default: every Windows checkout gets a CRLF
+  // action.yml, and the anchors below are written with bare "\\n". Without this the
+  // test passes on Linux CI and fails on every Windows machine — a shape worth
+  // avoiding on purpose, since CI green would be read as "works".
+  const actionYml = () =>
+    readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "action.yml"), "utf8").replace(
+      /\r\n/g,
+      "\n",
+    );
+
+  // The block for ONE input: from its key to the next key at the same indent.
+  // Bounded rather than a non-greedy scan of the whole file, so an input with
+  // no numeric default fails the assert instead of quietly borrowing a later
+  // input's.
+  function inputDefault(name) {
+    const yml = actionYml();
+    const start = yml.indexOf(`\n  ${name}:\n`);
+    assert.notEqual(start, -1, `${name} must exist in action.yml`);
+    const rest = yml.slice(start + 1);
+    const next = rest.search(/\n  [a-z][a-z0-9-]*:\n/);
+    const block = next === -1 ? rest : rest.slice(0, next);
+    const m = block.match(/\n    default: "(\d+)"/);
+    assert.ok(m, `${name} must have a numeric default in action.yml`);
+    return Number(m[1]);
+  }
+
+  test("an empty --max-kb enforces action.yml's max-diff-kb", () => {
+    const documented = inputDefault("max-diff-kb");
+    const oversized = `diff --git a/a b/a\n+${"x".repeat((documented + 1) * 1024)}\n`;
+    const out = run(["--diff", writeDiff(oversized), "--max-kb", ""]);
+    assert.equal(out.decision, "skip");
+    assert.match(out.reason, new RegExp(`over the ${documented} KB limit`));
+  });
+
+  test("an empty --max-files enforces action.yml's max-diff-files", () => {
+    const documented = inputDefault("max-diff-files");
+    let many = "";
+    for (let i = 0; i < documented + 1; i += 1) many += fileBlock(i);
+    const out = run(["--diff", writeDiff(many), "--max-files", ""]);
+    assert.equal(out.decision, "skip");
+    assert.match(out.reason, new RegExp(`over the ${documented}-file limit`));
   });
 });
 

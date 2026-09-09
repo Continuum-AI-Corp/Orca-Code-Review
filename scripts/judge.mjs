@@ -119,19 +119,21 @@ const body = JSON.stringify({
   messages: [{ role: "system", content: system }, { role: "user", content: user }],
 });
 
-// RETRYABLE UPSTREAM STATUSES. The same set the engine's own calls use, for the
-// same reason: these say "ask again", not "your request is wrong". This call had
-// no retry at all while every other LLM call in the pipeline had four, and a
-// single transient 502 was enough to take the judge out — which, now that L2 is
-// mandatory when precision filtering is on, takes the whole review with it.
-const RETRY_STATUS = new Set([408, 429, 500, 502, 503, 504, 522, 524]);
-const JUDGE_ATTEMPTS = 4;
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-// One attempt. Returns { res, raw } so the caller can decide on the status
-// WITHOUT re-reading a consumed body.
-async function judgeOnce() {
-  const res = await fetch(llmUrl, {
+// ONE REQUEST, AND DELIBERATELY NO RETRY HERE. In production OCR_LLM_URL is the
+// local fact proxy the action starts (action.yml), and fact-proxy.mjs already
+// retries 429/502/503/504 four times with backoff. A retry loop in this script
+// would multiply against that — four here times four there is sixteen upstream
+// requests for one judge call.
+//
+// It would also be a WIDER set than the proxy's on purpose-built ground: the
+// proxy excludes 500 because a 500 can mean the completion was produced and
+// billed, and replaying it buys the same bill twice. Anything added here would
+// bypass that policy without knowing it existed.
+//
+// Retry belongs at the proxy, which is the layer that knows whether the request
+// was idempotent. If this ever needs its own, it has to be the statuses the
+// proxy passes through, not a second copy of its list.
+const res = await fetch(llmUrl, {
   method: "POST",
   headers: {
     "content-type": "application/json",
@@ -151,38 +153,12 @@ async function judgeOnce() {
     "x-cr-lens": "judge",
   },
   body,
-  });
-  return { res, raw: await res.text() };
-}
-
-// THE RETRY LOOP. A transport error (DNS, reset, timeout) and a retryable
-// status are the same event from here: the answer has not arrived and asking
-// again may get one. A non-retryable status is terminal — repeating a 400 or a
-// 401 buys the same rejection and spends the workspace's quota doing it.
-//
-// The body of the LAST failure is what gets reported, so the log names the
-// actual reason rather than "attempt 4 failed". That line is how an operator
-// tells our gateway's own 5xx from one it passed through from upstream.
-let res = null, raw = "", lastErr = "";
-for (let attempt = 1; attempt <= JUDGE_ATTEMPTS; attempt += 1) {
-  try {
-    ({ res, raw } = await judgeOnce());
-    if (res.ok) break;
-    lastErr = `HTTP ${res.status}: ${raw.slice(0, 400)}`;
-    if (!RETRY_STATUS.has(res.status)) break;
-  } catch (e) {
-    res = null;
-    lastErr = `request failed: ${String(e && e.message ? e.message : e).slice(0, 400)}`;
-  }
-  if (attempt < JUDGE_ATTEMPTS) {
-    console.error(`judge: ${lastErr} — retrying (${attempt}/${JUDGE_ATTEMPTS - 1})`);
-    await sleep(500 * attempt);
-  }
-}
-if (!res || !res.ok) {
-  console.error(`judge failed after ${JUDGE_ATTEMPTS} attempt(s) — ${lastErr}`);
-  process.exit(1);
-}
+});
+const raw = await res.text();
+// The upstream body, not just the status: that text is how an operator tells the
+// gateway's own 5xx from one it passed through — and by the time it reaches here
+// the proxy has already spent its retries on it.
+if (!res.ok) { console.error(`HTTP ${res.status}: ${raw.slice(0, 400)}`); process.exit(1); }
 
 let content;
 try { content = JSON.parse(raw).choices[0].message.content; }

@@ -221,7 +221,8 @@ runs:
           "$RUNNER_TEMP/cr-facts.json" "$RUNNER_TEMP/proxy.out" "$RUNNER_TEMP/proxy.err" \
           "$RUNNER_TEMP/policy-block.json" \
           "$RUNNER_TEMP/pr.diff" "$RUNNER_TEMP/diff-guard.json" "$RUNNER_TEMP/prev-summary.md" \
-          "$RUNNER_TEMP/wallclock-timeout" "$RUNNER_TEMP/cr-usage.jsonl" \
+          "$RUNNER_TEMP/wallclock-timeout" "$RUNNER_TEMP/judge-unavailable" \
+          "$RUNNER_TEMP/cr-usage.jsonl" \
           "$RUNNER_TEMP/cr-clean" \
           "$RUNNER_TEMP/result.l1.json" "$RUNNER_TEMP/result.l2.json" \
           "$RUNNER_TEMP/result-extra.l1.json" "$RUNNER_TEMP/result-extra.l2.json"
@@ -919,9 +920,19 @@ runs:
           # L1 is fail-safe in the full sense: an error there keeps the engine's
           # findings and the review continues. L2 is not — see the judge branch
           # below for why an unavailable judge has to fail the pass.
+          #
+          # A PARTIAL RESULT IS ALREADY DOOMED, so do not spend the filter on
+          # it. CHECK fails closed on any non-empty `warnings`, so a pass that
+          # carries them cannot be published however the judge rules. Filtering
+          # anyway buys a judge call for output nobody will read — and if THAT
+          # call is what fails, the summary blames "the L2 judge was
+          # unavailable" for a run whose actual defect was a partial engine
+          # result, the exact mis-attribution the reason= tags were added to
+          # end. Falling through to CHECK lets reason=partial name it, and
+          # name the warnings with it.
           JUDGE_FAILED=""
           if [ "$PRECISION_FILTER" = "true" ] && [ "$rc" = "0" ] && [ -s "$1" ] \
-             && node -e "process.exit((require(process.argv[1]).comments||[]).length>0?0:1)" "$1" 2>/dev/null; then
+             && node -e "const r=require(process.argv[1]);process.exit((r.comments||[]).length>0&&(r.warnings||[]).length===0?0:1)" "$1" 2>/dev/null; then
             echo "::group::Precision filter — $2"
             L1_OUT="${1%.json}.l1.json"
             if node "$POSTFILTER" "$1" "$GITHUB_WORKSPACE" "$HEAD" --out "$L1_OUT" 2>&1 \
@@ -1738,7 +1749,8 @@ runs:
           "$RUNNER_TEMP/cr-facts.json" "$RUNNER_TEMP/proxy.out" "$RUNNER_TEMP/proxy.err" \
           "$RUNNER_TEMP/policy-block.json" \
           "$RUNNER_TEMP/pr.diff" "$RUNNER_TEMP/diff-guard.json" "$RUNNER_TEMP/prev-summary.md" \
-          "$RUNNER_TEMP/wallclock-timeout" "$RUNNER_TEMP/cr-usage.jsonl" \
+          "$RUNNER_TEMP/wallclock-timeout" "$RUNNER_TEMP/judge-unavailable" \
+          "$RUNNER_TEMP/cr-usage.jsonl" \
           "$RUNNER_TEMP/cr-clean" \
           "$RUNNER_TEMP/result.l1.json" "$RUNNER_TEMP/result.l2.json" \
           "$RUNNER_TEMP/result-extra.l1.json" "$RUNNER_TEMP/result-extra.l2.json"

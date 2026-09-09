@@ -189,56 +189,44 @@ async function judgeAgainstFlaky({ comments, failFor, status, reply, threshold }
   }
 }
 
-// A TRANSIENT 5xx MUST NOT TAKE THE JUDGE OUT. This call had no retry while
-// every other LLM call in the pipeline had four, so one 502 ended the judge —
-// and with L2 mandatory under precision filtering, that ends the review.
-describe("transient upstream failures are retried", () => {
+// RETRY BELONGS AT THE PROXY, NOT HERE. In production OCR_LLM_URL is the local
+// fact proxy, which already retries 429/502/503/504 four times — a loop in
+// judge.mjs multiplies against that (four times four upstream requests for one
+// judge call) and would replay statuses the proxy excludes on purpose, like a
+// 500 whose completion may already have been produced and billed.
+//
+// This pins the request count so that second layer cannot be reintroduced
+// without a test saying so out loud.
+describe("upstream failures are not retried in-process", () => {
   const keepAll = JSON.stringify({
     groups: [{ member_ids: [0], representative_id: 0, confidence: 0.9, keep: true }],
   });
 
   for (const status of [502, 503, 429, 500]) {
-    test(`a single ${status} is retried and the judge still succeeds`, async () => {
+    test(`a ${status} makes exactly one request and reports the body`, async () => {
       const r = await judgeAgainstFlaky({
         comments: [finding("a real finding")],
-        failFor: 1,
+        failFor: 99,
         status,
         reply: keepAll,
       });
-      assert.equal(r.status, 0, r.stderr);
-      assert.equal(r.calls, 2, "expected one retry after the first failure");
-      assert.equal(r.read().comments.length, 1);
+      assert.notEqual(r.status, 0);
+      assert.equal(r.calls, 1, "the proxy owns retries — this must not add a second layer");
+      assert.match(r.stderr, new RegExp(`HTTP ${status}`));
+      assert.match(r.stderr, /upstream is having a moment/);
     });
   }
 
-  test("retries are bounded and the last failure is what gets reported", async () => {
+  test("a recovered upstream still needs only the one request", async () => {
     const r = await judgeAgainstFlaky({
       comments: [finding("a real finding")],
-      failFor: 99,
+      failFor: 0,
       status: 502,
       reply: keepAll,
     });
-    assert.notEqual(r.status, 0);
-    assert.equal(r.calls, 4, "expected exactly 4 attempts, not unbounded retrying");
-    assert.match(r.stderr, /judge failed after 4 attempt\(s\)/);
-    // The body of the real failure, so an operator can tell OUR 5xx from one we
-    // passed through — "attempt 4 failed" would not.
-    assert.match(r.stderr, /HTTP 502/);
-    assert.match(r.stderr, /upstream is having a moment/);
-  });
-
-  // A 4xx that is not 429 says the request is wrong. Repeating it buys the same
-  // rejection and spends the workspace's quota doing it.
-  test("a non-retryable status fails on the first attempt", async () => {
-    const r = await judgeAgainstFlaky({
-      comments: [finding("a real finding")],
-      failFor: 99,
-      status: 400,
-      reply: keepAll,
-    });
-    assert.notEqual(r.status, 0);
-    assert.equal(r.calls, 1, "a 400 must not be retried");
-    assert.match(r.stderr, /HTTP 400/);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.calls, 1);
+    assert.equal(r.read().comments.length, 1);
   });
 });
 

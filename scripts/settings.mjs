@@ -47,16 +47,21 @@ const DEFAULTS = Object.freeze({
   quiet: false,
   fix_first: "P0,P1",
   block_on: "P0,P1",
-  // EVERY severity, and this is the FAILURE value rather than the product
-  // default. A workspace created after report_on shipped gets P0,P1 written
-  // explicitly by the gateway, while one that predates the setting still
-  // resolves to every severity — so no single value here can match "what this
-  // workspace normally sees".
+  // THE VALUE THE GATEWAY WOULD HAVE GIVEN, which is the whole job of a failure
+  // default: reproduce the answer we could not fetch.
   //
-  // So it fails OPEN. An install that normally shows P2/P3 must not lose them
-  // because a settings call timed out; the opposite mistake only shows a reader
-  // more than they asked for, once, in a run that already logged a fetch failure.
-  report_on: "P0,P1,P2,P3",
+  // This used to be every severity, on the reasoning that a workspace predating
+  // report_on resolved to all four, so no single value could match "what this
+  // workspace normally sees" — and losing P2/P3 to a timeout was judged worse
+  // than showing them once. That premise expired. The gateway's own default is
+  // now P0,P1 for every workspace that has not set the field, so all-severities
+  // matches nothing any more: on a settings outage it published P2/P3 to
+  // installs that would never have been shown them.
+  //
+  // Which is not a cosmetic mistake here. These severities are the ones the
+  // judge exists to filter, so an outage that opens this up is also the outage
+  // most likely to have degraded the filtering.
+  report_on: "P0,P1",
   rubric: "",
 });
 

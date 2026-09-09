@@ -45,10 +45,11 @@ const DEFAULTS = {
   quiet: false,
   fix_first: "P0,P1",
   block_on: "P0,P1",
-  // Fail-open, NOT the product default: this is what the action falls back to
-  // when the dashboard is unreachable, and an outage must never silently
-  // withhold findings. The configured default is narrower and lives server-side.
-  report_on: "P0,P1,P2,P3",
+  // What the action falls back to when the dashboard is unreachable. It mirrors
+  // the gateway's own default for a workspace that never set the field, so an
+  // outage reproduces the answer it could not fetch. Kept in sync with
+  // settings.mjs DEFAULTS — see the reasoning there.
+  report_on: "P0,P1",
   rubric: "",
 };
 
@@ -247,7 +248,7 @@ describe("settings: field-wise fallback on invalid values", () => {
         quiet: false,
         fix_first: "P0,P1",
         block_on: "P0,P1",
-        report_on: "P0,P1,P2,P3",
+        report_on: "P0,P1",
         rubric: "",
       });
       assert.match(r.stderr, /trigger/, "field fallbacks must be noted on stderr");

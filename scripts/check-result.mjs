@@ -10,6 +10,13 @@
 // all mean we do NOT have a trustworthy result. Converting those into a clean
 // "no issues found" pass would let a bad key, gateway outage, or CLI crash
 // silently clear a PR — so we surface them as an unavailable review instead.
+//
+// EACH REASON PRINTS A DISTINCT `reason=` TAG, because the caller collapses all
+// of them into one "no usable result" error and an operator reading only that
+// cannot tell an engine crash from a partial run. That ambiguity cost a real
+// support round-trip: a run whose judge logged a 502 just before this failed was
+// read as "the judge threw the review away", when the judge is soft and the
+// engine was what failed.
 
 import fs from "node:fs";
 
@@ -17,7 +24,7 @@ const [file, rcRaw] = process.argv.slice(2);
 const rc = Number(rcRaw || "0");
 
 if (rc !== 0) {
-  console.error(`review unavailable: engine exited ${rc}`);
+  console.error(`reason=engine-exit review unavailable: engine exited ${rc}`);
   process.exit(1);
 }
 
@@ -25,18 +32,18 @@ let parsed;
 try {
   parsed = JSON.parse(fs.readFileSync(file, "utf8"));
 } catch (e) {
-  console.error(`review unavailable: no parseable result in ${file} (${e.message})`);
+  console.error(`reason=unparseable review unavailable: no parseable result in ${file} (${e.message})`);
   process.exit(1);
 }
 
 if (!Array.isArray(parsed.comments)) {
-  console.error("review unavailable: result has no `comments` array");
+  console.error("reason=no-comments review unavailable: result has no `comments` array");
   process.exit(1);
 }
 
 const warnings = Array.isArray(parsed.warnings) ? parsed.warnings : [];
 if (warnings.length > 0) {
-  console.error(`review partial: ${warnings.length} warning(s) — ${warnings.join("; ")}`);
+  console.error(`reason=partial review partial: ${warnings.length} warning(s) — ${warnings.join("; ")}`);
   process.exit(1);
 }
 

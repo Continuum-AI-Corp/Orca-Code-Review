@@ -147,8 +147,13 @@ inputs:
       drops findings whose snippet does not match the claimed path; then an
       LLM judge (L2) clusters findings by root cause and drops
       low-confidence ones. Set to `"false"` to post the engine's raw
-      findings directly. Both layers are soft-fail — errors keep the prior
-      stage's findings and never abort the review.
+      findings directly — that skips BOTH layers, and is the supported way to
+      review without a judge.
+
+      L1 is soft-fail: if it errors the engine's findings carry forward. L2 is
+      NOT. L1's output is not publishable on its own, so a judge still
+      unavailable after retries fails the run closed rather than posting
+      unjudged findings.
     required: false
     default: "true"
   judge-model:
@@ -468,7 +473,11 @@ runs:
         # differently from the workspace default, whereas which severities a
         # reader SEES is the workspace's call. Defaulting to every severity means
         # a gateway that predates the field behaves exactly as before.
-        REPORT_ON=$(setting report_on "P0,P1,P2,P3")
+        # Agrees with settings.mjs DEFAULTS on purpose. settings.mjs always writes
+        # a defaulted file, so this fires only if that file is missing or
+        # unreadable — and two different answers to the same question is how one
+        # of them ends up wrong without anyone noticing.
+        REPORT_ON=$(setting report_on "P0,P1")
         RUBRIC=$(setting rubric "")
 
         # PRECEDENCE (documented in the README): an explicit `with:` input that
@@ -904,9 +913,13 @@ runs:
           # produced a usable JSON result on this pass — a timeout or crash
           # leaves nothing to filter, so we skip straight to CHECK which
           # will fail closed on rc anyway. Both layers write to a temp file
-          # first and only overwrite $1 on success (fail-safe: any
-          # postprocessing error keeps the prior stage's findings, never
-          # aborts the review or corrupts the engine output).
+          # first and only overwrite $1 on success, so no postprocessing error
+          # can corrupt the engine output.
+          #
+          # L1 is fail-safe in the full sense: an error there keeps the engine's
+          # findings and the review continues. L2 is not — see the judge branch
+          # below for why an unavailable judge has to fail the pass.
+          JUDGE_FAILED=""
           if [ "$PRECISION_FILTER" = "true" ] && [ "$rc" = "0" ] && [ -s "$1" ] \
              && node -e "process.exit((require(process.argv[1]).comments||[]).length>0?0:1)" "$1" 2>/dev/null; then
             echo "::group::Precision filter — $2"
@@ -960,10 +973,23 @@ runs:
                 mv -f "$POLICY_BLOCK_SNAPSHOT" "$POLICY_BLOCK"
               fi
             else
-              echo "::warning::L2 judge failed — keeping L1 findings"
-              # L2 failed. Restore engine's block if we snapshotted one; else
-              # clear any L2-authored block so a sidecar guardrail hit doesn't
-              # surface as the engine's own block on the primary review.
+              # L1 AND L2 ARE ONE STAGE, NOT TWO. L1's output is not a shippable
+              # review: it is the engine's raw findings with mismatched snippets
+              # re-homed, still carrying the duplicate and low-value findings that
+              # L2 exists to cluster and drop. Publishing it because the judge was
+              # unreachable ships exactly the noise the filter was turned on to
+              # remove — worse for the reader than no review, and it arrives
+              # looking like a finished one.
+              #
+              # So an unavailable judge fails the pass. `precision-filter: "false"`
+              # remains the supported way to run without a judge, and it skips L1
+              # too, which is the honest version of that choice.
+              echo "::error::L2 judge unavailable — failing closed (L1 output is not publishable on its own)"
+              printf 'the L2 judge was unavailable' > "$RUNNER_TEMP/judge-unavailable"
+              JUDGE_FAILED=1
+              # Restore engine's block if we snapshotted one; else clear any
+              # L2-authored block so a sidecar guardrail hit doesn't surface as
+              # the engine's own block on the primary review.
               if [ -f "$POLICY_BLOCK_SNAPSHOT" ]; then
                 mv -f "$POLICY_BLOCK_SNAPSHOT" "$POLICY_BLOCK"
               else
@@ -972,6 +998,7 @@ runs:
             fi
             unset POLICY_BLOCK_SNAPSHOT
             echo "::endgroup::"
+            [ -z "$JUDGE_FAILED" ] || return 1
           fi
           node "$CHECK" "$1" "$rc"
         }
@@ -989,10 +1016,16 @@ runs:
         #   $4 = extra passes allowed
         run_review() {
           if ! run_pass "$RESULT" "$1" "$2" "$3"; then
+            # WHICH GATE FAILED, in the summary and not only inside a collapsed
+            # log group. These all used to print the same "no usable result", so a
+            # reader could not tell an engine crash from a partial run from an
+            # unavailable judge, and picked whichever cause was last in the log.
             if [ -f "$RUNNER_TEMP/wallclock-timeout" ]; then
               echo "::error::$BRAND: $(cat "$RUNNER_TEMP/wallclock-timeout") — engine killed, failing closed. Bump the 'timeout-minutes' input for very large PRs or slow-per-call models."
+            elif [ -f "$RUNNER_TEMP/judge-unavailable" ]; then
+              echo "::error::$BRAND: the L2 judge was unavailable after retries — failing closed. Findings are not published unjudged; set 'precision-filter: false' to review without a judge."
             else
-              echo "::error::$BRAND: review engine produced no usable result — failing closed."
+              echo "::error::$BRAND: review engine produced no usable result — failing closed. The log carries a reason= tag naming which check failed."
             fi
             exit 1
           fi

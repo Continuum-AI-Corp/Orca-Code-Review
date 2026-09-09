@@ -150,6 +150,98 @@ const oneGroup = (over) =>
     ],
   });
 
+// LLM double that fails the first `failFor` requests with `status`, then
+// succeeds. Counts every request so a test can assert how many attempts the
+// judge actually made.
+async function startFlakyLlm({ failFor, status, reply }) {
+  let calls = 0;
+  const server = http.createServer((req, res) => {
+    req.on("data", () => {});
+    req.on("end", () => {
+      calls += 1;
+      if (calls <= failFor) {
+        res.writeHead(status, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: { message: "upstream is having a moment" } }));
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ choices: [{ message: { content: reply } }] }));
+    });
+  });
+  const port = await listen(server);
+  return { port, calls: () => calls, close: () => new Promise((r) => server.close(r)) };
+}
+
+async function judgeAgainstFlaky({ comments, failFor, status, reply, threshold }) {
+  const llm = await startFlakyLlm({ failFor, status, reply });
+  try {
+    const input = writeInput(comments);
+    const out = join(dir, `${(seq += 1)}-out.json`);
+    const args = [input, "--out", out, "--model", "test/judge-model"];
+    if (threshold !== undefined) args.push("--threshold", String(threshold));
+    const r = await spawnJudge(args, {
+      OCR_LLM_URL: `http://127.0.0.1:${llm.port}/v1/chat/completions`,
+      OCR_LLM_TOKEN: "test-token",
+    });
+    return { ...r, out, calls: llm.calls(), read: () => JSON.parse(readFileSync(out, "utf8")) };
+  } finally {
+    await llm.close();
+  }
+}
+
+// A TRANSIENT 5xx MUST NOT TAKE THE JUDGE OUT. This call had no retry while
+// every other LLM call in the pipeline had four, so one 502 ended the judge —
+// and with L2 mandatory under precision filtering, that ends the review.
+describe("transient upstream failures are retried", () => {
+  const keepAll = JSON.stringify({
+    groups: [{ member_ids: [0], representative_id: 0, confidence: 0.9, keep: true }],
+  });
+
+  for (const status of [502, 503, 429, 500]) {
+    test(`a single ${status} is retried and the judge still succeeds`, async () => {
+      const r = await judgeAgainstFlaky({
+        comments: [finding("a real finding")],
+        failFor: 1,
+        status,
+        reply: keepAll,
+      });
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(r.calls, 2, "expected one retry after the first failure");
+      assert.equal(r.read().comments.length, 1);
+    });
+  }
+
+  test("retries are bounded and the last failure is what gets reported", async () => {
+    const r = await judgeAgainstFlaky({
+      comments: [finding("a real finding")],
+      failFor: 99,
+      status: 502,
+      reply: keepAll,
+    });
+    assert.notEqual(r.status, 0);
+    assert.equal(r.calls, 4, "expected exactly 4 attempts, not unbounded retrying");
+    assert.match(r.stderr, /judge failed after 4 attempt\(s\)/);
+    // The body of the real failure, so an operator can tell OUR 5xx from one we
+    // passed through — "attempt 4 failed" would not.
+    assert.match(r.stderr, /HTTP 502/);
+    assert.match(r.stderr, /upstream is having a moment/);
+  });
+
+  // A 4xx that is not 429 says the request is wrong. Repeating it buys the same
+  // rejection and spends the workspace's quota doing it.
+  test("a non-retryable status fails on the first attempt", async () => {
+    const r = await judgeAgainstFlaky({
+      comments: [finding("a real finding")],
+      failFor: 99,
+      status: 400,
+      reply: keepAll,
+    });
+    assert.notEqual(r.status, 0);
+    assert.equal(r.calls, 1, "a 400 must not be retried");
+    assert.match(r.stderr, /HTTP 400/);
+  });
+});
+
 describe("argument validation (no LLM call is made)", () => {
   test("a missing input file exits 2", async () => {
     const r = await spawnJudge([], {});

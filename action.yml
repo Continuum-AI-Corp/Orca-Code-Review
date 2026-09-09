@@ -225,7 +225,8 @@ runs:
           "$RUNNER_TEMP/cr-usage.jsonl" \
           "$RUNNER_TEMP/cr-clean" \
           "$RUNNER_TEMP/result.l1.json" "$RUNNER_TEMP/result.l2.json" \
-          "$RUNNER_TEMP/result-extra.l1.json" "$RUNNER_TEMP/result-extra.l2.json"
+          "$RUNNER_TEMP/result-extra.l1.json" "$RUNNER_TEMP/result-extra.l2.json" \
+          "$RUNNER_TEMP/result.l2.log" "$RUNNER_TEMP/result-extra.l2.log"
 
     - name: Resolve PR refs
       id: pr
@@ -1037,7 +1038,16 @@ runs:
                 L2_REASON=$(head -n 1 "$L2_LOG")
                 [ -n "$L2_REASON" ] || L2_REASON="it exited $L2_RC without a message"
               fi
-              echo "::error::L2 judge failed — $L2_REASON — failing closed (L1 output is not publishable on its own)"
+              # STATED, NOT ADJUDICATED. Whether a failed judge ends the run is
+              # the caller's call, not this function's: on the mandatory pass it
+              # is fatal, on a best-effort exhaustive pass run_review warns and
+              # keeps what it has. An `::error:: … failing closed` here put a red
+              # annotation claiming a failure onto runs that went green — the same
+              # register of wrong-claim this pass exists to remove. Both callers
+              # already print the consequence, so this is a plain log line inside
+              # the group the operator is already reading. Matches the wall-clock
+              # marker above, which reports and lets run_review adjudicate.
+              echo "L2 judge failed — $L2_REASON (L1 output is not publishable on its own, so this pass yields nothing)"
               printf '%s' "$L2_REASON" > "$RUNNER_TEMP/judge-unavailable"
               JUDGE_FAILED=1
               # Restore engine's block if we snapshotted one; else clear any
@@ -1107,7 +1117,15 @@ runs:
               # Otherwise a benign tooling failure (engine crash / partial
               # result): extra depth is best-effort, so warn and END exhaustion,
               # keeping the findings already in hand.
-              echo "::warning::$BRAND: exhaustive pass $extra produced no usable result — keeping the findings so far."
+              # Carry the reason into the downgrade. Without this a judge failure
+              # reads as "no usable result", which is what an engine crash also
+              # reads as — and the reason is the only thing that tells an operator
+              # whether to re-run or fix a key.
+              if [ -f "$RUNNER_TEMP/judge-unavailable" ]; then
+                echo "::warning::$BRAND: exhaustive pass $extra — the L2 judge failed ($(cat "$RUNNER_TEMP/judge-unavailable")) — keeping the findings so far."
+              else
+                echo "::warning::$BRAND: exhaustive pass $extra produced no usable result — keeping the findings so far."
+              fi
               break
             fi
             # Guard the merge + parse like the run_pass failure path above: an
@@ -1795,4 +1813,5 @@ runs:
           "$RUNNER_TEMP/cr-usage.jsonl" \
           "$RUNNER_TEMP/cr-clean" \
           "$RUNNER_TEMP/result.l1.json" "$RUNNER_TEMP/result.l2.json" \
-          "$RUNNER_TEMP/result-extra.l1.json" "$RUNNER_TEMP/result-extra.l2.json"
+          "$RUNNER_TEMP/result-extra.l1.json" "$RUNNER_TEMP/result-extra.l2.json" \
+          "$RUNNER_TEMP/result.l2.log" "$RUNNER_TEMP/result-extra.l2.log"

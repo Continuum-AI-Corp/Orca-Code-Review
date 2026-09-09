@@ -108,7 +108,7 @@ the console rather than in the file.
 
 ## The run times out
 
-`timeout-minutes` (default 20) is a ceiling on **one** engine pass. Exceeding it
+`timeout-minutes` (default 60) is a ceiling on **one** engine pass. Exceeding it
 fails closed with a distinct "wall-clock timeout" error, separate from
 "no usable result" — the log says which. Raise it for very large diffs or
 slow-per-call models, or lower `concurrency` if the model is rate-limiting and the

@@ -95,12 +95,31 @@ inputs:
       KB. A skip posts a notice without running the engine; whether the check
       then fails or passes is `on-oversized-diff` (default: fail, so the
       merge gate cannot be padded around).
+
+
+      The default is a ceiling on WASTE, not on what the engine can handle.
+      It used to be 512, chosen to avoid spending tokens on diffs that review
+      badly — but it also meant a large PR could never be reviewed at all, and
+      "never" is worse than "expensive". The engine reads the diff through its
+      own tooling rather than taking it as one prompt, so size alone does not
+      decide whether it can work.
+
+
+      What DOES bound it is the model's context window, which the action cannot
+      see. Past that point a run reports a wall-clock timeout or an aborted
+      pass instead of a clean skip — louder, and no longer a silent refusal to
+      look. Lower this if you would rather have the clean skip back.
     required: false
-    default: "512"
+    default: "5000"
   max-diff-files:
-    description: "Skip the review when the diff touches more than this many files (same notice + on-oversized-diff outcome as max-diff-kb)."
+    description: >-
+      Skip the review when the diff touches more than this many files (same
+      notice + on-oversized-diff outcome as max-diff-kb). Counted separately
+      from size because the two describe different shapes: a mechanical rename
+      across 900 files is small and shallow, one 4 MB generated file is large
+      and shallow, and either can be worth reviewing.
     required: false
-    default: "300"
+    default: "2000"
   on-oversized-diff:
     description: >-
       What an oversized-diff skip does to the check. "fail" (default) fails
@@ -134,11 +153,17 @@ inputs:
       hasn't produced a result within this window it is killed and the run
       fails closed with a distinct "wall-clock timeout" error (separate from
       "no usable result", so the log makes clear which mode failed). Accepts
-      decimals (e.g. "0.5" = 30 seconds) for testing. Default 20 covers most
-      PRs on shipped models; bump for very large diffs or slow-per-call
-      models where per-file review takes longer.
+      decimals (e.g. "0.5" = 30 seconds) for testing.
+
+
+      PER PASS, which matters more now that the default is 60: `exhaustive`
+      mode makes up to three passes, so the worst case is three times this
+      number. The default rose with the diff limits — a review allowed to
+      accept a much larger diff needs the time to actually read it, and 20
+      minutes would have converted "too big, skipped cleanly" into "killed
+      halfway", which is the same non-review with a worse message.
     required: false
-    default: "20"
+    default: "60"
   precision-filter:
     description: >-
       Post-processing between the engine and the merge gate. When `"true"`
@@ -665,7 +690,7 @@ runs:
             `lose signal — ${outcome}\n\n` +
             `**What now?** Split the PR (smaller diffs get much higher-signal reviews), raise ` +
             `the limits, or make skips advisory:\n\n` +
-            '```yaml\nwith:\n  max-diff-kb: "1024"        # default 512\n  max-diff-files: "500"      # default 300\n  on-oversized-diff: "pass"  # default "fail"\n```' +
+            '```yaml\nwith:\n  max-diff-kb: "10000"       # default 5000\n  max-diff-files: "4000"     # default 2000\n  on-oversized-diff: "pass"  # default "fail"\n```' +
             footer;
 
           const comments = await github.paginate(github.rest.issues.listComments, {

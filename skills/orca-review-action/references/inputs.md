@@ -44,8 +44,8 @@ allowlist and put a budget + alert on the key.
 
 | Input | Default | What it does |
 | --- | --- | --- |
-| `max-diff-kb` | `512` | Skip the review when the merge-base diff exceeds this size. |
-| `max-diff-files` | `300` | Skip when the diff touches more files than this. |
+| `max-diff-kb` | `5000` | Skip the review when the merge-base diff exceeds this size. Raised from 512 so large PRs are reviewed rather than refused; the real ceiling is the model context window, which this cannot see. |
+| `max-diff-files` | `2000` | Skip when the diff touches more files than this. Raised from 300. |
 | `on-oversized-diff` | `fail` | What a skip does to the check. `fail` means a diff padded past the limits cannot bypass a required gate. `pass` restores advisory behavior. |
 
 The guard runs **before** the engine, so an oversized PR costs nothing.
@@ -67,7 +67,7 @@ an error keeps the prior stage's findings and never aborts the review.
 | --- | --- | --- |
 | `concurrency` | `24` | Max concurrent file reviews. Raise to shorten wall clock; lower it under a tight per-minute request quota. |
 | `max-tools` | `""` (engine default) | Max tool-call rounds per file. Lowering cuts cost and time but can cost review depth. |
-| `timeout-minutes` | `20` | Wall-clock ceiling for **one** engine pass. Exceeding it fails closed with a distinct "wall-clock timeout" error. Accepts decimals. Bump for very large diffs or slow models. |
+| `timeout-minutes` | `60` | Wall-clock ceiling for **one** engine pass — `exhaustive` makes up to three, so the worst case is 3x this. Exceeding it fails closed with a distinct "wall-clock timeout" error. Accepts decimals. Raised from 20 alongside the diff limits: a larger diff needs the time to actually be read. |
 
 ## Control plane
 

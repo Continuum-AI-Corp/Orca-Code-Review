@@ -13,8 +13,10 @@
 // not an error:
 //   {"decision":"review"|"skip","reason":"…","size_kb":<n>,"files":<n>}
 //
-// Defaults: 512 KB / 300 files (surfaced as the action's `max-diff-kb` /
-// `max-diff-files` inputs). The size check is decided from stat() alone — an
+// Defaults: 5000 KB / 2000 files (surfaced as the action's `max-diff-kb` /
+// `max-diff-files` inputs, and they must agree — a caller that passes an
+// empty flag lands here, so a stale number in this file would quietly give a
+// different limit than the documented one). The size check is decided from stat() alone — an
 // oversized diff is never read into memory, so a size-skip reports files: 0
 // (not counted). Only an under-cap diff is read to count files. `files`
 // counts `diff --git` file headers — in a unified diff every content line is
@@ -39,8 +41,8 @@ for (let i = 0; i < argv.length; i += 1) {
   else if (argv[i] === "--max-kb") maxKbRaw = argv[++i];
   else if (argv[i] === "--max-files") maxFilesRaw = argv[++i];
 }
-const maxKb = positive(maxKbRaw, 512);
-const maxFiles = positive(maxFilesRaw, 300);
+const maxKb = positive(maxKbRaw, 5000);
+const maxFiles = positive(maxFilesRaw, 2000);
 
 function decide() {
   if (!diffPath) {

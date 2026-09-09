@@ -498,15 +498,22 @@ describe("transport and envelope failures", () => {
     assert.match(r.stderr, /judge did not return JSON/);
   });
 
-  // AN UNREACHABLE GATEWAY IS A FAILURE CLASS TOO, and it has to arrive named.
-  // `fetch` rejects rather than returning a response when it cannot reach the
-  // endpoint at all, so with no catch the process died on an unhandled rejection
-  // and the first line of stderr was a path inside undici. action.yml quotes
-  // that first line as the reason in its summary annotation, which turned "the
-  // gateway is unreachable" into a stack frame — no class, no fix implied.
+  // A TRANSPORT FAILURE IS A FAILURE CLASS TOO, and it has to arrive named.
+  // With no catch the process died on an unhandled rejection and the first line
+  // of stderr was a path inside undici. action.yml quotes that first line as the
+  // reason in its summary annotation, so a dead gateway reached the operator as
+  // a stack frame — no class, no fix implied.
   //
-  // The no-stack-trace assertion is the load-bearing one: a `catch` that merely
-  // re-printed the error would still satisfy the message match.
+  // TWO SHAPES, not one, and the first fix only covered the first. `fetch`
+  // rejects when it cannot reach the endpoint at all, but RESOLVES as soon as
+  // response headers arrive — so a connection that dies mid-body rejects at
+  // `res.text()`, from a different undici frame, and stayed uncaught. Not
+  // hypothetical: fact-proxy relays headers first and then destroys the
+  // connection on a mid-stream upstream failure, and the proxy is what serves
+  // this call in production.
+  //
+  // The no-stack-trace assertions are the load-bearing ones: a `catch` that
+  // merely re-printed the error would still satisfy the message match.
   test("an unreachable endpoint is named, not a stack trace", async () => {
     // A port that was bound and released is reliably closed, unlike a guess.
     const probe = http.createServer();
@@ -520,9 +527,36 @@ describe("transport and envelope failures", () => {
     });
 
     assert.equal(r.status, 1);
-    assert.match(r.stderr, /could not reach the LLM/);
+    assert.match(r.stderr, /could not complete the LLM request/);
     assert.match(r.stderr, /ECONNREFUSED/, "the cause carries the part worth reading");
     assert.doesNotMatch(r.stderr, /node:internal/, "an unhandled rejection must not be the diagnostic");
+    assert.equal(existsSync(out), false);
+  });
+
+  test("a connection dropped mid-body is named too, not a stack trace", async () => {
+    // Headers out, then the socket dies — what fact-proxy does once it has
+    // already relayed headers. `fetch` has resolved by then, so this rejects at
+    // the body read, which the first version of the catch did not cover.
+    const server = http.createServer((req, res) => {
+      req.resume();
+      req.on("end", () => {
+        res.writeHead(200, { "content-type": "application/json", "content-length": "9999" });
+        res.write('{"choices"');
+        setTimeout(() => res.socket.destroy(), 20);
+      });
+    });
+    const port = await listen(server);
+
+    const out = join(dir, `${(seq += 1)}-dropped.json`);
+    const r = await spawnJudge([writeInput([finding("[P1] x")]), "--model", "m", "--out", out], {
+      OCR_LLM_URL: `http://127.0.0.1:${port}/v1/chat/completions`,
+      OCR_LLM_TOKEN: "t",
+    });
+    await new Promise((res2) => server.close(res2));
+
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /could not complete the LLM request/);
+    assert.doesNotMatch(r.stderr, /node:internal/, "the body read must be inside the catch");
     assert.equal(existsSync(out), false);
   });
 

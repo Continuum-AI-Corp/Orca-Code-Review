@@ -134,16 +134,24 @@ const body = JSON.stringify({
 // was idempotent. If this ever needs its own, it has to be the statuses the
 // proxy passes through, not a second copy of its list.
 // WRAPPED, because a transport failure is a failure class too and it has to
-// arrive named. `fetch` rejects rather than returning a response when it
-// cannot reach the endpoint at all, so without this the process dies on an
-// unhandled rejection and the first line of stderr is a path inside undici.
-// action.yml quotes that first line as the reason in its summary annotation,
-// which would turn "the gateway is unreachable" into a stack frame.
+// arrive named. Without this the process dies on an unhandled rejection and
+// the first line of stderr is a path inside undici — and action.yml quotes
+// that first line as the reason in its summary annotation, so a dead gateway
+// would be reported to the operator as a stack frame.
+//
+// THE BODY READ IS INSIDE THE TRY, not just the fetch. `fetch` resolves as
+// soon as the response headers arrive, so a connection that dies mid-body
+// rejects at `res.text()` instead — with "terminated", from a different
+// undici frame. That is not a hypothetical here: fact-proxy relays headers
+// first and then destroys the connection on a mid-stream upstream failure
+// (fact-proxy.mjs, "the headers are out, so destroy the connection"), and
+// the proxy is what serves this call in production.
 //
 // The message alone is not enough either: fetch collapses every transport
 // failure into the string "fetch failed" and puts the part worth reading —
-// ECONNREFUSED, a DNS failure, a headers timeout — in `cause`.
+// ECONNREFUSED, ECONNRESET, a DNS failure, a headers timeout — in `cause`.
 let res;
+let raw;
 try {
   res = await fetch(llmUrl, {
     method: "POST",
@@ -166,12 +174,15 @@ try {
     },
     body,
   });
+  raw = await res.text();
 } catch (e) {
+  // "complete", not "reach": by the time a mid-body drop lands here the
+  // request did reach the gateway. The cause code is what separates the two —
+  // ECONNREFUSED never arrived, ECONNRESET/terminated arrived and was cut off.
   const cause = e?.cause?.code || e?.cause?.message || "";
-  console.error(`could not reach the LLM: ${e?.message || e}${cause ? ` (${cause})` : ""}`);
+  console.error(`could not complete the LLM request: ${e?.message || e}${cause ? ` (${cause})` : ""}`);
   process.exit(1);
 }
-const raw = await res.text();
 // The upstream body, not just the status: that text is how an operator tells the
 // gateway's own 5xx from one it passed through — and by the time it reaches here
 // the proxy has already spent its retries on it.

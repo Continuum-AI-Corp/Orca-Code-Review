@@ -589,6 +589,61 @@ describe("transport and envelope failures", () => {
   });
 });
 
+// A 200 WITH THE WRONG SHAPE MUST STILL NAME ITSELF. action.yml promotes the
+// FIRST line of this script's stderr into the job's user-facing L2 failure
+// reason, so a throw from a malformed-but-parseable response reported
+// `judge.mjs:195` as why the review failed — a source location, naming nothing
+// and implying no fix.
+//
+// Every assertion here checks the first line specifically, because that is the
+// only line the operator sees. A fix that printed a good message *after* a stack
+// trace would pass a plain `match` and change nothing.
+describe("malformed-but-parseable responses name themselves on the first line", () => {
+  const firstLine = (r) => r.stderr.split("\n")[0];
+  const notASourceLocation = (r) => {
+    assert.doesNotMatch(firstLine(r), /judge\.mjs:\d+/, "a source location is not a diagnosis");
+    assert.doesNotMatch(firstLine(r), /^node:internal/, "a node internal is not a diagnosis");
+  };
+
+  // The envelope parses and `content` is present but unreadable, so extraction
+  // succeeds and the `.replace` after it used to throw.
+  for (const [name, content] of [["null", null], ["a number", 42], ["an object", { a: 1 }]]) {
+    test(`content is ${name}`, async () => {
+      const r = await judge({
+        comments: [finding("[P1] x")],
+        envelope: JSON.stringify({ choices: [{ message: { content } }] }),
+      });
+      assert.equal(r.status, 1);
+      assert.match(firstLine(r), /judge response had no text content/);
+      notASourceLocation(r);
+    });
+  }
+
+  // A string iterates by character and an object is not iterable at all, so
+  // these threw a few lines further down. Failing is right rather than falling
+  // open: falling open keeps every finding unjudged, the one outcome the judge
+  // exists to prevent.
+  for (const [name, groups] of [["a string", '"nope"'], ["an object", '{"a":1}'], ["a number", "7"]]) {
+    test(`groups is ${name}`, async () => {
+      const r = await judge({ comments: [finding("[P1] x")], reply: `{"groups":${groups}}` });
+      assert.equal(r.status, 1);
+      assert.match(firstLine(r), /judge returned a non-array groups/);
+      notASourceLocation(r);
+    });
+  }
+
+  // The falsy cases are NOT a schema violation — they mean the judge classified
+  // nothing, which the fail-open pass handles deliberately. Guarding the truthy
+  // non-arrays must not sweep these up.
+  for (const [name, groups] of [["absent", "{}"], ["null", '{"groups":null}']]) {
+    test(`groups ${name} still falls open, not closed`, async () => {
+      const r = await judge({ comments: [finding("[P1] x")], reply: groups, threshold: 0.7 });
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(r.read().comments.length, 1, "an unclassified finding is kept");
+    });
+  }
+});
+
 describe("request shape", () => {
   test("the model, a zero temperature and bearer auth are sent", async () => {
     const r = await judge({

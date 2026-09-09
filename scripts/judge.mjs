@@ -21,6 +21,24 @@
 import fs from "node:fs";
 import os from "node:os";
 
+// A STABLE FIRST LINE, WHATEVER HAPPENS. action.yml lifts the first line of
+// this script's stderr into the job's user-facing L2 failure reason, so an
+// unforeseen throw reports a source-file path as "why your review failed" —
+// which names nothing and implies no fix. The guards further down cover the
+// malformed response shapes we know about; enumerating shapes is always one
+// shape short, so this covers the rest.
+//
+// The stack still follows on the next lines: the action echoes the whole log,
+// and only the FIRST line is promoted, so nothing needed for debugging is
+// lost by putting a summary in front of it.
+const crash = (label) => (e) => {
+  console.error(`judge crashed (${label}): ${e?.message || e}`);
+  if (e?.stack) console.error(e.stack);
+  process.exit(1);
+};
+process.on("uncaughtException", crash("uncaught"));
+process.on("unhandledRejection", crash("unhandled rejection"));
+
 // Parses a strict plain decimal (e.g. "0.7", "-1", "0.5"). Returns the number
 // or NaN. Deliberately does NOT use parseFloat — parseFloat stops at the
 // first non-numeric character so "0.8oops" would silently become 0.8 and
@@ -192,11 +210,31 @@ let content;
 try { content = JSON.parse(raw).choices[0].message.content; }
 catch (e) { console.error("bad completion envelope: " + raw.slice(0, 400)); process.exit(1); }
 
+// A 200 CAN STILL CARRY NOTHING TO READ. The envelope parses, `content` is
+// present, and it is null or a number — so the extraction above succeeds and
+// the `.replace` below throws instead. Type it here, where the raw response
+// is still in hand to quote.
+if (typeof content !== "string") {
+  console.error(`judge response had no text content (${content === null ? "null" : typeof content}): ${raw.slice(0, 400)}`);
+  process.exit(1);
+}
+
 const jsonText = content.replace(/^```(?:json)?/m, "").replace(/```$/m, "").trim();
 let parsed;
 try { parsed = JSON.parse(jsonText); }
 catch (e) { console.error("judge did not return JSON:\n" + content.slice(0, 600)); process.exit(1); }
 
+// A TRUTHY NON-ARRAY `groups` IS A SCHEMA VIOLATION, and it must fail rather
+// than fall open. A string iterates by character and an object is not
+// iterable at all, so what used to happen was a throw a few lines down — and
+// falling open instead would keep every finding unjudged, which is the one
+// outcome the judge exists to prevent. Falsy stays as it was: absent or null
+// means the judge classified nothing, which the fail-open pass below handles
+// deliberately.
+if (parsed.groups && !Array.isArray(parsed.groups)) {
+  console.error(`judge returned a non-array groups (${typeof parsed.groups}): ${jsonText.slice(0, 600)}`);
+  process.exit(1);
+}
 const groups = parsed.groups || [];
 const covered = new Set();
 for (const g of groups) for (const id of g.member_ids || []) covered.add(id);

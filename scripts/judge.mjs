@@ -224,18 +224,29 @@ let parsed;
 try { parsed = JSON.parse(jsonText); }
 catch (e) { console.error("judge did not return JSON:\n" + content.slice(0, 600)); process.exit(1); }
 
-// A TRUTHY NON-ARRAY `groups` IS A SCHEMA VIOLATION, and it must fail rather
-// than fall open. A string iterates by character and an object is not
-// iterable at all, so what used to happen was a throw a few lines down — and
-// falling open instead would keep every finding unjudged, which is the one
-// outcome the judge exists to prevent. Falsy stays as it was: absent or null
-// means the judge classified nothing, which the fail-open pass below handles
-// deliberately.
-if (parsed.groups && !Array.isArray(parsed.groups)) {
-  console.error(`judge returned a non-array groups (${typeof parsed.groups}): ${jsonText.slice(0, 600)}`);
+// `groups` MUST BE AN ARRAY, and the test names what is ALLOWED rather than
+// what is rejected. Two exemptions, both meaning "the judge classified
+// nothing", which the fail-open pass below handles deliberately: the field is
+// absent, or it is null. Everything else is a schema violation and fails.
+//
+// Not a truthiness test, which is what this was and what was wrong with it.
+// `false`, `0` and `""` are falsy AND non-arrays, so they slipped through to
+// the `|| []` below, every finding came out unclassified, the fail-open pass
+// kept all of them, and the judge exited 0 — publishing every finding as
+// JUDGED off a response that violated the schema. That is the precise outcome
+// this pass fails closed to prevent, and a reject-list guard reintroduced it
+// while looking like it closed it.
+//
+// An accept-list cannot have that shape of hole: a value that is neither
+// exemption nor an array has nowhere to go but the failure branch, whatever
+// type someone invents next.
+const groupsRaw = parsed.groups;
+const groupsOmitted = groupsRaw === undefined || groupsRaw === null;
+if (!groupsOmitted && !Array.isArray(groupsRaw)) {
+  console.error(`judge returned a non-array groups (${typeof groupsRaw}): ${jsonText.slice(0, 600)}`);
   process.exit(1);
 }
-const groups = parsed.groups || [];
+const groups = groupsOmitted ? [] : groupsRaw;
 const covered = new Set();
 for (const g of groups) for (const id of g.member_ids || []) covered.add(id);
 // Fail-open for findings the judge did not classify into any group: mark

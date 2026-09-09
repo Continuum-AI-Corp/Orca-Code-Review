@@ -632,9 +632,28 @@ describe("malformed-but-parseable responses name themselves on the first line", 
     });
   }
 
-  // The falsy cases are NOT a schema violation — they mean the judge classified
-  // nothing, which the fail-open pass handles deliberately. Guarding the truthy
-  // non-arrays must not sweep these up.
+  // FALSY IS NOT THE SAME QUESTION AS ABSENT, and conflating them is what the
+  // first version of this guard did. `false`, `0`, `""` and `NaN` are falsy AND
+  // non-arrays, so a truthiness test let them through to `|| []`: every finding
+  // came out unclassified, the fail-open pass kept all of them, and the judge
+  // exited 0 — publishing every finding as JUDGED off a response that violated
+  // the schema, under `precision-filter: true`. A reject-list guard reintroduced
+  // the exact hole it looked like it was closing.
+  //
+  // Asserting the exit code is not enough on its own here: the failure mode was
+  // a SUCCESSFUL exit, so these also assert that no output was written.
+  for (const [name, groups] of [["false", "false"], ["0", "0"], ['""', '""']]) {
+    test(`groups is ${name} — falsy but still a schema violation`, async () => {
+      const r = await judge({ comments: [finding("[P1] x")], reply: `{"groups":${groups}}` });
+      assert.notEqual(r.status, 0, "a falsy non-array must not publish findings as judged");
+      assert.match(r.stderr.split("\n")[0], /judge returned a non-array groups/);
+      assert.equal(existsSync(r.out), false, "nothing may be written on a schema violation");
+    });
+  }
+
+  // The two exemptions are named on purpose and mean "the judge classified
+  // nothing", which the fail-open pass handles deliberately. Tightening the
+  // guard must not sweep them up.
   for (const [name, groups] of [["absent", "{}"], ["null", '{"groups":null}']]) {
     test(`groups ${name} still falls open, not closed`, async () => {
       const r = await judge({ comments: [finding("[P1] x")], reply: groups, threshold: 0.7 });

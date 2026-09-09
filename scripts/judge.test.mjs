@@ -150,6 +150,86 @@ const oneGroup = (over) =>
     ],
   });
 
+// LLM double that fails the first `failFor` requests with `status`, then
+// succeeds. Counts every request so a test can assert how many attempts the
+// judge actually made.
+async function startFlakyLlm({ failFor, status, reply }) {
+  let calls = 0;
+  const server = http.createServer((req, res) => {
+    req.on("data", () => {});
+    req.on("end", () => {
+      calls += 1;
+      if (calls <= failFor) {
+        res.writeHead(status, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: { message: "upstream is having a moment" } }));
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ choices: [{ message: { content: reply } }] }));
+    });
+  });
+  const port = await listen(server);
+  return { port, calls: () => calls, close: () => new Promise((r) => server.close(r)) };
+}
+
+async function judgeAgainstFlaky({ comments, failFor, status, reply, threshold }) {
+  const llm = await startFlakyLlm({ failFor, status, reply });
+  try {
+    const input = writeInput(comments);
+    const out = join(dir, `${(seq += 1)}-out.json`);
+    const args = [input, "--out", out, "--model", "test/judge-model"];
+    if (threshold !== undefined) args.push("--threshold", String(threshold));
+    const r = await spawnJudge(args, {
+      OCR_LLM_URL: `http://127.0.0.1:${llm.port}/v1/chat/completions`,
+      OCR_LLM_TOKEN: "test-token",
+    });
+    return { ...r, out, calls: llm.calls(), read: () => JSON.parse(readFileSync(out, "utf8")) };
+  } finally {
+    await llm.close();
+  }
+}
+
+// RETRY BELONGS AT THE PROXY, NOT HERE. In production OCR_LLM_URL is the local
+// fact proxy, which already retries 429/502/503/504 four times — a loop in
+// judge.mjs multiplies against that (four times four upstream requests for one
+// judge call) and would replay statuses the proxy excludes on purpose, like a
+// 500 whose completion may already have been produced and billed.
+//
+// This pins the request count so that second layer cannot be reintroduced
+// without a test saying so out loud.
+describe("upstream failures are not retried in-process", () => {
+  const keepAll = JSON.stringify({
+    groups: [{ member_ids: [0], representative_id: 0, confidence: 0.9, keep: true }],
+  });
+
+  for (const status of [502, 503, 429, 500]) {
+    test(`a ${status} makes exactly one request and reports the body`, async () => {
+      const r = await judgeAgainstFlaky({
+        comments: [finding("a real finding")],
+        failFor: 99,
+        status,
+        reply: keepAll,
+      });
+      assert.notEqual(r.status, 0);
+      assert.equal(r.calls, 1, "the proxy owns retries — this must not add a second layer");
+      assert.match(r.stderr, new RegExp(`HTTP ${status}`));
+      assert.match(r.stderr, /upstream is having a moment/);
+    });
+  }
+
+  test("a recovered upstream still needs only the one request", async () => {
+    const r = await judgeAgainstFlaky({
+      comments: [finding("a real finding")],
+      failFor: 0,
+      status: 502,
+      reply: keepAll,
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.calls, 1);
+    assert.equal(r.read().comments.length, 1);
+  });
+});
+
 describe("argument validation (no LLM call is made)", () => {
   test("a missing input file exits 2", async () => {
     const r = await spawnJudge([], {});
@@ -418,6 +498,86 @@ describe("transport and envelope failures", () => {
     assert.match(r.stderr, /judge did not return JSON/);
   });
 
+  // A TRANSPORT FAILURE IS A FAILURE CLASS TOO, and it has to arrive named.
+  // With no catch the process died on an unhandled rejection and the first line
+  // of stderr was a path inside undici. action.yml quotes that first line as the
+  // reason in its summary annotation, so a dead gateway reached the operator as
+  // a stack frame — no class, no fix implied.
+  //
+  // TWO SHAPES, not one, and the first fix only covered the first. `fetch`
+  // rejects when it cannot reach the endpoint at all, but RESOLVES as soon as
+  // response headers arrive — so a connection that dies mid-body rejects at
+  // `res.text()`, from a different undici frame, and stayed uncaught. Not
+  // hypothetical: fact-proxy relays headers first and then destroys the
+  // connection on a mid-stream upstream failure, and the proxy is what serves
+  // this call in production.
+  //
+  // The no-stack-trace assertions are the load-bearing ones: a `catch` that
+  // merely re-printed the error would still satisfy the message match.
+  test("an unreachable endpoint is named, not a stack trace", async () => {
+    // A port that was bound and released is reliably closed, unlike a guess.
+    const probe = http.createServer();
+    const closedPort = await listen(probe);
+    await new Promise((r) => probe.close(r));
+
+    const out = join(dir, `${(seq += 1)}-unreachable.json`);
+    const r = await spawnJudge([writeInput([finding("[P1] x")]), "--model", "m", "--out", out], {
+      OCR_LLM_URL: `http://127.0.0.1:${closedPort}/v1/chat/completions`,
+      OCR_LLM_TOKEN: "t",
+    });
+
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /could not complete the LLM request/);
+    assert.match(r.stderr, /ECONNREFUSED/, "the cause carries the part worth reading");
+    assert.doesNotMatch(r.stderr, /node:internal/, "an unhandled rejection must not be the diagnostic");
+    assert.equal(existsSync(out), false);
+  });
+
+  test("a connection dropped mid-body is named too, not a stack trace", async () => {
+    // Headers out, then the socket dies — what fact-proxy does once it has
+    // already relayed headers. `fetch` has resolved by then, so this rejects at
+    // the body read, which the first version of the catch did not cover.
+    const server = http.createServer((req, res) => {
+      req.resume();
+      req.on("end", () => {
+        res.writeHead(200, { "content-type": "application/json", "content-length": "9999" });
+        res.write('{"choices"');
+        setTimeout(() => res.socket.destroy(), 20);
+      });
+    });
+    const port = await listen(server);
+
+    const out = join(dir, `${(seq += 1)}-dropped.json`);
+    const r = await spawnJudge([writeInput([finding("[P1] x")]), "--model", "m", "--out", out], {
+      OCR_LLM_URL: `http://127.0.0.1:${port}/v1/chat/completions`,
+      OCR_LLM_TOKEN: "t",
+    });
+    await new Promise((res2) => server.close(res2));
+
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /could not complete the LLM request/);
+    assert.doesNotMatch(r.stderr, /node:internal/, "the body read must be inside the catch");
+    assert.equal(existsSync(out), false);
+  });
+
+  // Every terminal failure names its class on the FIRST line, because that is
+  // the line action.yml lifts into the summary. The judge's bad-reply message is
+  // followed by a dump of what the model actually said, so a `tail` would quote
+  // a fragment of the bad completion in place of the reason.
+  test("the first stderr line names the class, for every terminal failure", async () => {
+    const cases = [
+      [{ status: 400, reply: "{}" }, /^HTTP 400: /],
+      [{ status: 401, reply: "{}" }, /^HTTP 401: /],
+      [{ envelope: "not json at all" }, /^bad completion envelope: /],
+      [{ reply: "Sure! Here are my thoughts\nabout the finding." }, /^judge did not return JSON:$/],
+    ];
+    for (const [opts, expected] of cases) {
+      const r = await judge({ comments: [finding("[P1] x")], reply: "{}", ...opts });
+      assert.equal(r.status, 1);
+      assert.match(r.stderr.split("\n")[0], expected);
+    }
+  });
+
   test("a fenced ```json reply is unwrapped", async () => {
     const r = await judge({
       comments: [finding("[P1] x")],
@@ -427,6 +587,80 @@ describe("transport and envelope failures", () => {
     assert.equal(r.status, 0, r.stderr);
     assert.equal(r.read().comments.length, 1);
   });
+});
+
+// A 200 WITH THE WRONG SHAPE MUST STILL NAME ITSELF. action.yml promotes the
+// FIRST line of this script's stderr into the job's user-facing L2 failure
+// reason, so a throw from a malformed-but-parseable response reported
+// `judge.mjs:195` as why the review failed — a source location, naming nothing
+// and implying no fix.
+//
+// Every assertion here checks the first line specifically, because that is the
+// only line the operator sees. A fix that printed a good message *after* a stack
+// trace would pass a plain `match` and change nothing.
+describe("malformed-but-parseable responses name themselves on the first line", () => {
+  const firstLine = (r) => r.stderr.split("\n")[0];
+  const notASourceLocation = (r) => {
+    assert.doesNotMatch(firstLine(r), /judge\.mjs:\d+/, "a source location is not a diagnosis");
+    assert.doesNotMatch(firstLine(r), /^node:internal/, "a node internal is not a diagnosis");
+  };
+
+  // The envelope parses and `content` is present but unreadable, so extraction
+  // succeeds and the `.replace` after it used to throw.
+  for (const [name, content] of [["null", null], ["a number", 42], ["an object", { a: 1 }]]) {
+    test(`content is ${name}`, async () => {
+      const r = await judge({
+        comments: [finding("[P1] x")],
+        envelope: JSON.stringify({ choices: [{ message: { content } }] }),
+      });
+      assert.equal(r.status, 1);
+      assert.match(firstLine(r), /judge response had no text content/);
+      notASourceLocation(r);
+    });
+  }
+
+  // A string iterates by character and an object is not iterable at all, so
+  // these threw a few lines further down. Failing is right rather than falling
+  // open: falling open keeps every finding unjudged, the one outcome the judge
+  // exists to prevent.
+  for (const [name, groups] of [["a string", '"nope"'], ["an object", '{"a":1}'], ["a number", "7"]]) {
+    test(`groups is ${name}`, async () => {
+      const r = await judge({ comments: [finding("[P1] x")], reply: `{"groups":${groups}}` });
+      assert.equal(r.status, 1);
+      assert.match(firstLine(r), /judge returned a non-array groups/);
+      notASourceLocation(r);
+    });
+  }
+
+  // FALSY IS NOT THE SAME QUESTION AS ABSENT, and conflating them is what the
+  // first version of this guard did. `false`, `0`, `""` and `NaN` are falsy AND
+  // non-arrays, so a truthiness test let them through to `|| []`: every finding
+  // came out unclassified, the fail-open pass kept all of them, and the judge
+  // exited 0 — publishing every finding as JUDGED off a response that violated
+  // the schema, under `precision-filter: true`. A reject-list guard reintroduced
+  // the exact hole it looked like it was closing.
+  //
+  // Asserting the exit code is not enough on its own here: the failure mode was
+  // a SUCCESSFUL exit, so these also assert that no output was written.
+  for (const [name, groups] of [["false", "false"], ["0", "0"], ['""', '""']]) {
+    test(`groups is ${name} — falsy but still a schema violation`, async () => {
+      const r = await judge({ comments: [finding("[P1] x")], reply: `{"groups":${groups}}` });
+      assert.notEqual(r.status, 0, "a falsy non-array must not publish findings as judged");
+      assert.match(r.stderr.split("\n")[0], /judge returned a non-array groups/);
+      assert.equal(existsSync(r.out), false, "nothing may be written on a schema violation");
+    });
+  }
+
+  // The two exemptions are named on purpose and mean "the judge classified
+  // nothing", which the fail-open pass handles deliberately. Tightening the
+  // guard must not sweep them up.
+  for (const [name, groups] of [["absent", "{}"], ["null", '{"groups":null}']]) {
+    test(`groups ${name} still falls open, not closed`, async () => {
+      const r = await judge({ comments: [finding("[P1] x")], reply: groups, threshold: 0.7 });
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(r.read().comments.length, 1, "an unclassified finding is kept");
+    });
+  }
 });
 
 describe("request shape", () => {

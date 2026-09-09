@@ -21,6 +21,24 @@
 import fs from "node:fs";
 import os from "node:os";
 
+// A STABLE FIRST LINE, WHATEVER HAPPENS. action.yml lifts the first line of
+// this script's stderr into the job's user-facing L2 failure reason, so an
+// unforeseen throw reports a source-file path as "why your review failed" —
+// which names nothing and implies no fix. The guards further down cover the
+// malformed response shapes we know about; enumerating shapes is always one
+// shape short, so this covers the rest.
+//
+// The stack still follows on the next lines: the action echoes the whole log,
+// and only the FIRST line is promoted, so nothing needed for debugging is
+// lost by putting a summary in front of it.
+const crash = (label) => (e) => {
+  console.error(`judge crashed (${label}): ${e?.message || e}`);
+  if (e?.stack) console.error(e.stack);
+  process.exit(1);
+};
+process.on("uncaughtException", crash("uncaught"));
+process.on("unhandledRejection", crash("unhandled rejection"));
+
 // Parses a strict plain decimal (e.g. "0.7", "-1", "0.5"). Returns the number
 // or NaN. Deliberately does NOT use parseFloat — parseFloat stops at the
 // first non-numeric character so "0.8oops" would silently become 0.8 and
@@ -119,40 +137,116 @@ const body = JSON.stringify({
   messages: [{ role: "system", content: system }, { role: "user", content: user }],
 });
 
-const res = await fetch(llmUrl, {
-  method: "POST",
-  headers: {
-    "content-type": "application/json",
-    [llmAuthHeader]: "Bearer " + llmToken,
-    // THE ANGLE, so a router recipe can put this call on its own model.
-    //
-    // --model is normally the router ALIAS (action.yml passes it when judge-model
-    // is unset), and an alias resolves through the workspace's DSL, which has no
-    // other way to tell a judge call from a review call: the reviewer stamps no
-    // angle. Without this header the judge takes the recipe's default — the
-    // reviewer's own model — and a judge scoring work its own model produced
-    // agrees with it, so the pass goes inert while still reporting success.
-    //
-    // Harmless when --model names a concrete model: nothing resolves an alias, so
-    // nothing reads the header. Sent unconditionally rather than only for aliases
-    // because "is this an alias" is the gateway's judgement, not this script's.
-    "x-cr-lens": "judge",
-  },
-  body,
-});
-const raw = await res.text();
+// ONE REQUEST, AND DELIBERATELY NO RETRY HERE. In production OCR_LLM_URL is the
+// local fact proxy the action starts (action.yml), and fact-proxy.mjs already
+// retries 429/502/503/504 four times with backoff. A retry loop in this script
+// would multiply against that — four here times four there is sixteen upstream
+// requests for one judge call.
+//
+// It would also be a WIDER set than the proxy's on purpose-built ground: the
+// proxy excludes 500 because a 500 can mean the completion was produced and
+// billed, and replaying it buys the same bill twice. Anything added here would
+// bypass that policy without knowing it existed.
+//
+// Retry belongs at the proxy, which is the layer that knows whether the request
+// was idempotent. If this ever needs its own, it has to be the statuses the
+// proxy passes through, not a second copy of its list.
+// WRAPPED, because a transport failure is a failure class too and it has to
+// arrive named. Without this the process dies on an unhandled rejection and
+// the first line of stderr is a path inside undici — and action.yml quotes
+// that first line as the reason in its summary annotation, so a dead gateway
+// would be reported to the operator as a stack frame.
+//
+// THE BODY READ IS INSIDE THE TRY, not just the fetch. `fetch` resolves as
+// soon as the response headers arrive, so a connection that dies mid-body
+// rejects at `res.text()` instead — with "terminated", from a different
+// undici frame. That is not a hypothetical here: fact-proxy relays headers
+// first and then destroys the connection on a mid-stream upstream failure
+// (fact-proxy.mjs, "the headers are out, so destroy the connection"), and
+// the proxy is what serves this call in production.
+//
+// The message alone is not enough either: fetch collapses every transport
+// failure into the string "fetch failed" and puts the part worth reading —
+// ECONNREFUSED, ECONNRESET, a DNS failure, a headers timeout — in `cause`.
+let res;
+let raw;
+try {
+  res = await fetch(llmUrl, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      [llmAuthHeader]: "Bearer " + llmToken,
+      // THE ANGLE, so a router recipe can put this call on its own model.
+      //
+      // --model is normally the router ALIAS (action.yml passes it when judge-model
+      // is unset), and an alias resolves through the workspace's DSL, which has no
+      // other way to tell a judge call from a review call: the reviewer stamps no
+      // angle. Without this header the judge takes the recipe's default — the
+      // reviewer's own model — and a judge scoring work its own model produced
+      // agrees with it, so the pass goes inert while still reporting success.
+      //
+      // Harmless when --model names a concrete model: nothing resolves an alias, so
+      // nothing reads the header. Sent unconditionally rather than only for aliases
+      // because "is this an alias" is the gateway's judgement, not this script's.
+      "x-cr-lens": "judge",
+    },
+    body,
+  });
+  raw = await res.text();
+} catch (e) {
+  // "complete", not "reach": by the time a mid-body drop lands here the
+  // request did reach the gateway. The cause code is what separates the two —
+  // ECONNREFUSED never arrived, ECONNRESET/terminated arrived and was cut off.
+  const cause = e?.cause?.code || e?.cause?.message || "";
+  console.error(`could not complete the LLM request: ${e?.message || e}${cause ? ` (${cause})` : ""}`);
+  process.exit(1);
+}
+// The upstream body, not just the status: that text is how an operator tells the
+// gateway's own 5xx from one it passed through — and by the time it reaches here
+// the proxy has already spent its retries on it.
 if (!res.ok) { console.error(`HTTP ${res.status}: ${raw.slice(0, 400)}`); process.exit(1); }
 
 let content;
 try { content = JSON.parse(raw).choices[0].message.content; }
 catch (e) { console.error("bad completion envelope: " + raw.slice(0, 400)); process.exit(1); }
 
+// A 200 CAN STILL CARRY NOTHING TO READ. The envelope parses, `content` is
+// present, and it is null or a number — so the extraction above succeeds and
+// the `.replace` below throws instead. Type it here, where the raw response
+// is still in hand to quote.
+if (typeof content !== "string") {
+  console.error(`judge response had no text content (${content === null ? "null" : typeof content}): ${raw.slice(0, 400)}`);
+  process.exit(1);
+}
+
 const jsonText = content.replace(/^```(?:json)?/m, "").replace(/```$/m, "").trim();
 let parsed;
 try { parsed = JSON.parse(jsonText); }
 catch (e) { console.error("judge did not return JSON:\n" + content.slice(0, 600)); process.exit(1); }
 
-const groups = parsed.groups || [];
+// `groups` MUST BE AN ARRAY, and the test names what is ALLOWED rather than
+// what is rejected. Two exemptions, both meaning "the judge classified
+// nothing", which the fail-open pass below handles deliberately: the field is
+// absent, or it is null. Everything else is a schema violation and fails.
+//
+// Not a truthiness test, which is what this was and what was wrong with it.
+// `false`, `0` and `""` are falsy AND non-arrays, so they slipped through to
+// the `|| []` below, every finding came out unclassified, the fail-open pass
+// kept all of them, and the judge exited 0 — publishing every finding as
+// JUDGED off a response that violated the schema. That is the precise outcome
+// this pass fails closed to prevent, and a reject-list guard reintroduced it
+// while looking like it closed it.
+//
+// An accept-list cannot have that shape of hole: a value that is neither
+// exemption nor an array has nowhere to go but the failure branch, whatever
+// type someone invents next.
+const groupsRaw = parsed.groups;
+const groupsOmitted = groupsRaw === undefined || groupsRaw === null;
+if (!groupsOmitted && !Array.isArray(groupsRaw)) {
+  console.error(`judge returned a non-array groups (${typeof groupsRaw}): ${jsonText.slice(0, 600)}`);
+  process.exit(1);
+}
+const groups = groupsOmitted ? [] : groupsRaw;
 const covered = new Set();
 for (const g of groups) for (const id of g.member_ids || []) covered.add(id);
 // Fail-open for findings the judge did not classify into any group: mark

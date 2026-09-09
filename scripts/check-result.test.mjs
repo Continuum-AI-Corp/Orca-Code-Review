@@ -16,7 +16,7 @@
 // it.
 
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -173,5 +173,76 @@ describe("output contract", () => {
     assert.equal(run(writeResult(OK), "0").stdout, "");
     assert.equal(run(writeResult(OK), "1").stdout, "");
     assert.equal(run(writeResult("{bad"), "0").stdout, "");
+  });
+});
+
+// THE PRECISION GATE AND THIS SCRIPT JUDGE THE SAME FIELD, so they must never
+// disagree about it. action.yml skips L1+L2 when the engine result looks
+// partial, on the reasoning that CHECK will reject it anyway — which holds only
+// while both read `warnings` the same way.
+//
+// They did not. The gate tested `(r.warnings||[]).length`, so a non-array value
+// like the string "oops" measured 4 and read as partial; CHECK normalizes any
+// non-array to [] and publishes. Skip plus publish is the combination that
+// ships the engine's raw findings with no L1 and no L2 under
+// `precision-filter: true` — unjudged output arriving as a green review, i.e.
+// exactly what the fail-closed judge branch exists to stop.
+//
+// Which sets the direction this predicate has to fail in: SKIPPING is the
+// branch that can publish unjudged, so it may only be taken when the result is
+// DEFINITELY partial. The real predicate is extracted from action.yml rather
+// than restated here, so editing one without the other fails this test.
+describe("the action's skip-the-filter predicate agrees with this script", () => {
+  const actionYml = readFileSync(join(SCRIPTS, "..", "action.yml"), "utf8");
+
+  // The `node -e "…"` program inside the precision gate's `if`.
+  const predicate = (() => {
+    const m = actionYml.match(/&& node -e "(const r=require\(process\.argv\[1\]\)[^"]*warnings[^"]*)"/);
+    assert.ok(m, "the precision gate's warnings predicate must exist in action.yml");
+    return m[1];
+  })();
+
+  const filtersRun = (file) => spawnSync("node", ["-e", predicate, file], { encoding: "utf8" }).status === 0;
+
+  // Every shape an engine (or a corrupted write) can put in `warnings`.
+  const shapes = {
+    "a real non-empty array": ["conventions lens failed"],
+    "an empty array": [],
+    "the field absent": undefined,
+    "null": null,
+    "a string": "oops",
+    "a number": 5,
+    "an object": { a: 1 },
+  };
+
+  for (const [name, warnings] of Object.entries(shapes)) {
+    test(`${name}: the filter is never skipped on a result CHECK will publish`, () => {
+      const body = { comments: [{ content: "[P2] a finding" }] };
+      if (warnings !== undefined) body.warnings = warnings;
+      const file = writeResult(body);
+
+      const skipped = !filtersRun(file);
+      const published = run(file, "0").status === 0;
+      assert.ok(
+        !(skipped && published),
+        `unjudged publish: filter skipped AND CHECK published for warnings=${JSON.stringify(warnings)}`,
+      );
+    });
+  }
+
+  test("a genuinely partial result is the one case that skips — and CHECK stops it", () => {
+    const file = writeResult({ comments: [{ content: "[P2] a" }], warnings: ["lens failed"] });
+    assert.equal(filtersRun(file), false, "a partial result must not spend a judge call");
+    const r = run(file, "0");
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /reason=partial/);
+  });
+
+  test("a clean result with findings still enters the filter", () => {
+    assert.equal(filtersRun(writeResult({ comments: [{ content: "[P2] a" }], warnings: [] })), true);
+  });
+
+  test("no findings means nothing to filter", () => {
+    assert.equal(filtersRun(writeResult({ comments: [], warnings: [] })), false);
   });
 });

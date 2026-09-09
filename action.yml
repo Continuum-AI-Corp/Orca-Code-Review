@@ -147,8 +147,13 @@ inputs:
       drops findings whose snippet does not match the claimed path; then an
       LLM judge (L2) clusters findings by root cause and drops
       low-confidence ones. Set to `"false"` to post the engine's raw
-      findings directly. Both layers are soft-fail — errors keep the prior
-      stage's findings and never abort the review.
+      findings directly — that skips BOTH layers, and is the supported way to
+      review without a judge.
+
+      L1 is soft-fail: if it errors the engine's findings carry forward. L2 is
+      NOT. L1's output is not publishable on its own, so a judge still
+      unavailable after retries fails the run closed rather than posting
+      unjudged findings.
     required: false
     default: "true"
   judge-model:
@@ -216,10 +221,12 @@ runs:
           "$RUNNER_TEMP/cr-facts.json" "$RUNNER_TEMP/proxy.out" "$RUNNER_TEMP/proxy.err" \
           "$RUNNER_TEMP/policy-block.json" \
           "$RUNNER_TEMP/pr.diff" "$RUNNER_TEMP/diff-guard.json" "$RUNNER_TEMP/prev-summary.md" \
-          "$RUNNER_TEMP/wallclock-timeout" "$RUNNER_TEMP/cr-usage.jsonl" \
+          "$RUNNER_TEMP/wallclock-timeout" "$RUNNER_TEMP/judge-unavailable" \
+          "$RUNNER_TEMP/cr-usage.jsonl" \
           "$RUNNER_TEMP/cr-clean" \
           "$RUNNER_TEMP/result.l1.json" "$RUNNER_TEMP/result.l2.json" \
-          "$RUNNER_TEMP/result-extra.l1.json" "$RUNNER_TEMP/result-extra.l2.json"
+          "$RUNNER_TEMP/result-extra.l1.json" "$RUNNER_TEMP/result-extra.l2.json" \
+          "$RUNNER_TEMP/result.l2.log" "$RUNNER_TEMP/result-extra.l2.log"
 
     - name: Resolve PR refs
       id: pr
@@ -468,7 +475,11 @@ runs:
         # differently from the workspace default, whereas which severities a
         # reader SEES is the workspace's call. Defaulting to every severity means
         # a gateway that predates the field behaves exactly as before.
-        REPORT_ON=$(setting report_on "P0,P1,P2,P3")
+        # Agrees with settings.mjs DEFAULTS on purpose. settings.mjs always writes
+        # a defaulted file, so this fires only if that file is missing or
+        # unreadable — and two different answers to the same question is how one
+        # of them ends up wrong without anyone noticing.
+        REPORT_ON=$(setting report_on "P0,P1")
         RUBRIC=$(setting rubric "")
 
         # PRECEDENCE (documented in the README): an explicit `with:` input that
@@ -904,11 +915,39 @@ runs:
           # produced a usable JSON result on this pass — a timeout or crash
           # leaves nothing to filter, so we skip straight to CHECK which
           # will fail closed on rc anyway. Both layers write to a temp file
-          # first and only overwrite $1 on success (fail-safe: any
-          # postprocessing error keeps the prior stage's findings, never
-          # aborts the review or corrupts the engine output).
+          # first and only overwrite $1 on success, so no postprocessing error
+          # can corrupt the engine output.
+          #
+          # L1 is fail-safe in the full sense: an error there keeps the engine's
+          # findings and the review continues. L2 is not — see the judge branch
+          # below for why an unavailable judge has to fail the pass.
+          #
+          # A PARTIAL RESULT IS ALREADY DOOMED, so do not spend the filter on
+          # it. CHECK fails closed on any non-empty `warnings`, so a pass that
+          # carries them cannot be published however the judge rules. Filtering
+          # anyway buys a judge call for output nobody will read — and if THAT
+          # call is what fails, the summary blames "the L2 judge was
+          # unavailable" for a run whose actual defect was a partial engine
+          # result, the exact mis-attribution the reason= tags were added to
+          # end. Falling through to CHECK lets reason=partial name it, and
+          # name the warnings with it.
+          #
+          # `warnings` IS NORMALIZED THE WAY CHECK NORMALIZES IT — Array.isArray
+          # or nothing (check-result.mjs:44). The two predicates decide the fate
+          # of the same field and must not disagree: a non-array `warnings`, say
+          # the string "oops", has a nonzero .length, so a bare length test reads
+          # it as partial and skips the filter, while CHECK reads it as absent and
+          # publishes. That combination ships the engine's raw findings with no
+          # L1 and no L2 under `precision-filter: true` — the exact thing this
+          # pass fails closed to prevent, arriving as a green review.
+          #
+          # Which fixes the direction this test has to fail in: SKIPPING is the
+          # branch that can publish unjudged, so it may only be taken when the
+          # result is definitely partial. Anything malformed or unrecognized runs
+          # the filter.
+          JUDGE_FAILED=""
           if [ "$PRECISION_FILTER" = "true" ] && [ "$rc" = "0" ] && [ -s "$1" ] \
-             && node -e "process.exit((require(process.argv[1]).comments||[]).length>0?0:1)" "$1" 2>/dev/null; then
+             && node -e "const r=require(process.argv[1]);const w=Array.isArray(r.warnings)?r.warnings:[];process.exit((r.comments||[]).length>0&&w.length===0?0:1)" "$1" 2>/dev/null; then
             echo "::group::Precision filter — $2"
             L1_OUT="${1%.json}.l1.json"
             if node "$POSTFILTER" "$1" "$GITHUB_WORKSPACE" "$HEAD" --out "$L1_OUT" 2>&1 \
@@ -947,8 +986,17 @@ runs:
             # success. That is why the provisioned recipe carries the rule, and why
             # setting judge-model explicitly stays the way to pin a model outright.
             L2_MODEL="${JUDGE_MODEL:-$ROUTER}"
-            if node "$JUDGE" "$1" --model "$L2_MODEL" --threshold "$JUDGE_THRESHOLD" --out "$L2_OUT" 2>&1 \
-               && [ -s "$L2_OUT" ]; then
+            # CAPTURED, not just streamed, so the failure branch can name WHICH
+            # failure this was. The judge exits 1 for a 400, a 401, a missing
+            # endpoint and a model that answered with prose, and its exit code
+            # tells those apart from each other not at all — the reason only ever
+            # existed in its stderr. Everything is echoed below either way, so the
+            # log reads exactly as before.
+            L2_LOG="${1%.json}.l2.log"
+            L2_RC=0
+            node "$JUDGE" "$1" --model "$L2_MODEL" --threshold "$JUDGE_THRESHOLD" --out "$L2_OUT" > "$L2_LOG" 2>&1 || L2_RC=$?
+            cat "$L2_LOG"
+            if [ "$L2_RC" = "0" ] && [ -s "$L2_OUT" ]; then
               L2_IN_COUNT=$(node -pe "(require('$1').comments||[]).length")
               L2_OUT_COUNT=$(node -pe "(require('$L2_OUT').comments||[]).length")
               echo "L2 judge ($L2_MODEL, thr=$JUDGE_THRESHOLD): $L2_IN_COUNT -> $L2_OUT_COUNT"
@@ -960,10 +1008,51 @@ runs:
                 mv -f "$POLICY_BLOCK_SNAPSHOT" "$POLICY_BLOCK"
               fi
             else
-              echo "::warning::L2 judge failed — keeping L1 findings"
-              # L2 failed. Restore engine's block if we snapshotted one; else
-              # clear any L2-authored block so a sidecar guardrail hit doesn't
-              # surface as the engine's own block on the primary review.
+              # L1 AND L2 ARE ONE STAGE, NOT TWO. L1's output is not a shippable
+              # review: it is the engine's raw findings with mismatched snippets
+              # re-homed, still carrying the duplicate and low-value findings that
+              # L2 exists to cluster and drop. Publishing it because the judge was
+              # unreachable ships exactly the noise the filter was turned on to
+              # remove — worse for the reader than no review, and it arrives
+              # looking like a finished one.
+              #
+              # So an unavailable judge fails the pass. `precision-filter: "false"`
+              # remains the supported way to run without a judge, and it skips L1
+              # too, which is the honest version of that choice.
+              # NAME THE FAILURE CLASS, because they are not the same problem and
+              # do not have the same fix. A 502 is the gateway having a moment and
+              # is worth re-running; a 401 is a key the workspace has to correct;
+              # a model answering in prose is a routing or recipe problem. Calling
+              # all three "unavailable after retries" sends the reader to wait out
+              # an outage that is not happening — the same wrong-cause reading
+              # this pass exists to end, one layer up.
+              #
+              # FIRST line, not the last: the judge prints "judge did not return
+              # JSON:" followed by a dump of what the model actually said, so a
+              # tail would quote a fragment of the bad completion in place of the
+              # reason. On a failing exit nothing else has been printed, so the
+              # first line is the message.
+              if [ "$L2_RC" = "0" ]; then
+                L2_REASON="it exited cleanly but wrote no output"
+              else
+                L2_REASON=$(head -n 1 "$L2_LOG")
+                [ -n "$L2_REASON" ] || L2_REASON="it exited $L2_RC without a message"
+              fi
+              # STATED, NOT ADJUDICATED. Whether a failed judge ends the run is
+              # the caller's call, not this function's: on the mandatory pass it
+              # is fatal, on a best-effort exhaustive pass run_review warns and
+              # keeps what it has. An `::error:: … failing closed` here put a red
+              # annotation claiming a failure onto runs that went green — the same
+              # register of wrong-claim this pass exists to remove. Both callers
+              # already print the consequence, so this is a plain log line inside
+              # the group the operator is already reading. Matches the wall-clock
+              # marker above, which reports and lets run_review adjudicate.
+              echo "L2 judge failed — $L2_REASON (L1 output is not publishable on its own, so this pass yields nothing)"
+              printf '%s' "$L2_REASON" > "$RUNNER_TEMP/judge-unavailable"
+              JUDGE_FAILED=1
+              # Restore engine's block if we snapshotted one; else clear any
+              # L2-authored block so a sidecar guardrail hit doesn't surface as
+              # the engine's own block on the primary review.
               if [ -f "$POLICY_BLOCK_SNAPSHOT" ]; then
                 mv -f "$POLICY_BLOCK_SNAPSHOT" "$POLICY_BLOCK"
               else
@@ -972,6 +1061,7 @@ runs:
             fi
             unset POLICY_BLOCK_SNAPSHOT
             echo "::endgroup::"
+            [ -z "$JUDGE_FAILED" ] || return 1
           fi
           node "$CHECK" "$1" "$rc"
         }
@@ -989,10 +1079,16 @@ runs:
         #   $4 = extra passes allowed
         run_review() {
           if ! run_pass "$RESULT" "$1" "$2" "$3"; then
+            # WHICH GATE FAILED, in the summary and not only inside a collapsed
+            # log group. These all used to print the same "no usable result", so a
+            # reader could not tell an engine crash from a partial run from an
+            # unavailable judge, and picked whichever cause was last in the log.
             if [ -f "$RUNNER_TEMP/wallclock-timeout" ]; then
               echo "::error::$BRAND: $(cat "$RUNNER_TEMP/wallclock-timeout") — engine killed, failing closed. Bump the 'timeout-minutes' input for very large PRs or slow-per-call models."
+            elif [ -f "$RUNNER_TEMP/judge-unavailable" ]; then
+              echo "::error::$BRAND: the L2 judge failed — $(cat "$RUNNER_TEMP/judge-unavailable") — failing closed. Findings are not published unjudged; set 'precision-filter: false' to review without a judge."
             else
-              echo "::error::$BRAND: review engine produced no usable result — failing closed."
+              echo "::error::$BRAND: review engine produced no usable result — failing closed. The log carries a reason= tag naming which check failed."
             fi
             exit 1
           fi
@@ -1021,7 +1117,15 @@ runs:
               # Otherwise a benign tooling failure (engine crash / partial
               # result): extra depth is best-effort, so warn and END exhaustion,
               # keeping the findings already in hand.
-              echo "::warning::$BRAND: exhaustive pass $extra produced no usable result — keeping the findings so far."
+              # Carry the reason into the downgrade. Without this a judge failure
+              # reads as "no usable result", which is what an engine crash also
+              # reads as — and the reason is the only thing that tells an operator
+              # whether to re-run or fix a key.
+              if [ -f "$RUNNER_TEMP/judge-unavailable" ]; then
+                echo "::warning::$BRAND: exhaustive pass $extra — the L2 judge failed ($(cat "$RUNNER_TEMP/judge-unavailable")) — keeping the findings so far."
+              else
+                echo "::warning::$BRAND: exhaustive pass $extra produced no usable result — keeping the findings so far."
+              fi
               break
             fi
             # Guard the merge + parse like the run_pass failure path above: an
@@ -1705,7 +1809,9 @@ runs:
           "$RUNNER_TEMP/cr-facts.json" "$RUNNER_TEMP/proxy.out" "$RUNNER_TEMP/proxy.err" \
           "$RUNNER_TEMP/policy-block.json" \
           "$RUNNER_TEMP/pr.diff" "$RUNNER_TEMP/diff-guard.json" "$RUNNER_TEMP/prev-summary.md" \
-          "$RUNNER_TEMP/wallclock-timeout" "$RUNNER_TEMP/cr-usage.jsonl" \
+          "$RUNNER_TEMP/wallclock-timeout" "$RUNNER_TEMP/judge-unavailable" \
+          "$RUNNER_TEMP/cr-usage.jsonl" \
           "$RUNNER_TEMP/cr-clean" \
           "$RUNNER_TEMP/result.l1.json" "$RUNNER_TEMP/result.l2.json" \
-          "$RUNNER_TEMP/result-extra.l1.json" "$RUNNER_TEMP/result-extra.l2.json"
+          "$RUNNER_TEMP/result-extra.l1.json" "$RUNNER_TEMP/result-extra.l2.json" \
+          "$RUNNER_TEMP/result.l2.log" "$RUNNER_TEMP/result-extra.l2.log"

@@ -47,16 +47,21 @@ const DEFAULTS = Object.freeze({
   quiet: false,
   fix_first: "P0,P1",
   block_on: "P0,P1",
-  // EVERY severity, and this is the FAILURE value rather than the product
-  // default. A workspace created after report_on shipped gets P0,P1 written
-  // explicitly by the gateway, while one that predates the setting still
-  // resolves to every severity — so no single value here can match "what this
-  // workspace normally sees".
+  // THE VALUE THE GATEWAY WOULD HAVE GIVEN, which is the whole job of a failure
+  // default: reproduce the answer we could not fetch.
   //
-  // So it fails OPEN. An install that normally shows P2/P3 must not lose them
-  // because a settings call timed out; the opposite mistake only shows a reader
-  // more than they asked for, once, in a run that already logged a fetch failure.
-  report_on: "P0,P1,P2,P3",
+  // This used to be every severity, on the reasoning that a workspace predating
+  // report_on resolved to all four, so no single value could match "what this
+  // workspace normally sees" — and losing P2/P3 to a timeout was judged worse
+  // than showing them once. That premise expired. The gateway's own default is
+  // now P0,P1 for every workspace that has not set the field, so all-severities
+  // matches nothing any more: on a settings outage it published P2/P3 to
+  // installs that would never have been shown them.
+  //
+  // Which is not a cosmetic mistake here. These severities are the ones the
+  // judge exists to filter, so an outage that opens this up is also the outage
+  // most likely to have degraded the filtering.
+  report_on: "P0,P1",
   rubric: "",
 });
 
@@ -94,8 +99,20 @@ function validateSettings(data) {
   // report_on rides in this loop because it is the same shape as the other two —
   // a comma-joined severity subset where "" is a deliberate "none" — but it
   // answers a different question: fix_first and block_on decide what the review
-  // ENFORCES, report_on only what it SHOWS. A gateway that predates the field
-  // omits it, which lands on the default above and behaves as before.
+  // ENFORCES, report_on only what it SHOWS.
+  //
+  // A RESPONSE THAT OMITS THE FIELD LANDS ON THE DEFAULT ABOVE, and that is no
+  // longer the same thing as "behaves as before" — this comment used to say so
+  // and was left standing when the default moved from all four severities to
+  // P0,P1. An omitted field now resolves to P0,P1, and since the report filter
+  // shows report_on UNION block_on (block_on also defaulting to P0,P1), P2/P3
+  // are not recovered anywhere else.
+  //
+  // Which is deliberate, and rests on a fact rather than on compatibility: the
+  // gateway sets P0,P1 itself for every workspace that has not chosen a value,
+  // so an omitted field means "this workspace never set one", not "this server
+  // is too old to have the field". Reproducing the answer we could not fetch is
+  // the whole job of a failure default, and the answer is P0,P1.
   for (const field of ["fix_first", "block_on", "report_on"]) {
     const normalized = normalizeSeverityList(data[field]);
     if (normalized !== null) out[field] = normalized;

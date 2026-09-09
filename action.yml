@@ -930,9 +930,23 @@ runs:
           # result, the exact mis-attribution the reason= tags were added to
           # end. Falling through to CHECK lets reason=partial name it, and
           # name the warnings with it.
+          #
+          # `warnings` IS NORMALIZED THE WAY CHECK NORMALIZES IT — Array.isArray
+          # or nothing (check-result.mjs:44). The two predicates decide the fate
+          # of the same field and must not disagree: a non-array `warnings`, say
+          # the string "oops", has a nonzero .length, so a bare length test reads
+          # it as partial and skips the filter, while CHECK reads it as absent and
+          # publishes. That combination ships the engine's raw findings with no
+          # L1 and no L2 under `precision-filter: true` — the exact thing this
+          # pass fails closed to prevent, arriving as a green review.
+          #
+          # Which fixes the direction this test has to fail in: SKIPPING is the
+          # branch that can publish unjudged, so it may only be taken when the
+          # result is definitely partial. Anything malformed or unrecognized runs
+          # the filter.
           JUDGE_FAILED=""
           if [ "$PRECISION_FILTER" = "true" ] && [ "$rc" = "0" ] && [ -s "$1" ] \
-             && node -e "const r=require(process.argv[1]);process.exit((r.comments||[]).length>0&&(r.warnings||[]).length===0?0:1)" "$1" 2>/dev/null; then
+             && node -e "const r=require(process.argv[1]);const w=Array.isArray(r.warnings)?r.warnings:[];process.exit((r.comments||[]).length>0&&w.length===0?0:1)" "$1" 2>/dev/null; then
             echo "::group::Precision filter — $2"
             L1_OUT="${1%.json}.l1.json"
             if node "$POSTFILTER" "$1" "$GITHUB_WORKSPACE" "$HEAD" --out "$L1_OUT" 2>&1 \

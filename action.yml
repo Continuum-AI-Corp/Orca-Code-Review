@@ -985,8 +985,17 @@ runs:
             # success. That is why the provisioned recipe carries the rule, and why
             # setting judge-model explicitly stays the way to pin a model outright.
             L2_MODEL="${JUDGE_MODEL:-$ROUTER}"
-            if node "$JUDGE" "$1" --model "$L2_MODEL" --threshold "$JUDGE_THRESHOLD" --out "$L2_OUT" 2>&1 \
-               && [ -s "$L2_OUT" ]; then
+            # CAPTURED, not just streamed, so the failure branch can name WHICH
+            # failure this was. The judge exits 1 for a 400, a 401, a missing
+            # endpoint and a model that answered with prose, and its exit code
+            # tells those apart from each other not at all — the reason only ever
+            # existed in its stderr. Everything is echoed below either way, so the
+            # log reads exactly as before.
+            L2_LOG="${1%.json}.l2.log"
+            L2_RC=0
+            node "$JUDGE" "$1" --model "$L2_MODEL" --threshold "$JUDGE_THRESHOLD" --out "$L2_OUT" > "$L2_LOG" 2>&1 || L2_RC=$?
+            cat "$L2_LOG"
+            if [ "$L2_RC" = "0" ] && [ -s "$L2_OUT" ]; then
               L2_IN_COUNT=$(node -pe "(require('$1').comments||[]).length")
               L2_OUT_COUNT=$(node -pe "(require('$L2_OUT').comments||[]).length")
               echo "L2 judge ($L2_MODEL, thr=$JUDGE_THRESHOLD): $L2_IN_COUNT -> $L2_OUT_COUNT"
@@ -1009,8 +1018,27 @@ runs:
               # So an unavailable judge fails the pass. `precision-filter: "false"`
               # remains the supported way to run without a judge, and it skips L1
               # too, which is the honest version of that choice.
-              echo "::error::L2 judge unavailable — failing closed (L1 output is not publishable on its own)"
-              printf 'the L2 judge was unavailable' > "$RUNNER_TEMP/judge-unavailable"
+              # NAME THE FAILURE CLASS, because they are not the same problem and
+              # do not have the same fix. A 502 is the gateway having a moment and
+              # is worth re-running; a 401 is a key the workspace has to correct;
+              # a model answering in prose is a routing or recipe problem. Calling
+              # all three "unavailable after retries" sends the reader to wait out
+              # an outage that is not happening — the same wrong-cause reading
+              # this pass exists to end, one layer up.
+              #
+              # FIRST line, not the last: the judge prints "judge did not return
+              # JSON:" followed by a dump of what the model actually said, so a
+              # tail would quote a fragment of the bad completion in place of the
+              # reason. On a failing exit nothing else has been printed, so the
+              # first line is the message.
+              if [ "$L2_RC" = "0" ]; then
+                L2_REASON="it exited cleanly but wrote no output"
+              else
+                L2_REASON=$(head -n 1 "$L2_LOG")
+                [ -n "$L2_REASON" ] || L2_REASON="it exited $L2_RC without a message"
+              fi
+              echo "::error::L2 judge failed — $L2_REASON — failing closed (L1 output is not publishable on its own)"
+              printf '%s' "$L2_REASON" > "$RUNNER_TEMP/judge-unavailable"
               JUDGE_FAILED=1
               # Restore engine's block if we snapshotted one; else clear any
               # L2-authored block so a sidecar guardrail hit doesn't surface as
@@ -1048,7 +1076,7 @@ runs:
             if [ -f "$RUNNER_TEMP/wallclock-timeout" ]; then
               echo "::error::$BRAND: $(cat "$RUNNER_TEMP/wallclock-timeout") — engine killed, failing closed. Bump the 'timeout-minutes' input for very large PRs or slow-per-call models."
             elif [ -f "$RUNNER_TEMP/judge-unavailable" ]; then
-              echo "::error::$BRAND: the L2 judge was unavailable after retries — failing closed. Findings are not published unjudged; set 'precision-filter: false' to review without a judge."
+              echo "::error::$BRAND: the L2 judge failed — $(cat "$RUNNER_TEMP/judge-unavailable") — failing closed. Findings are not published unjudged; set 'precision-filter: false' to review without a judge."
             else
               echo "::error::$BRAND: review engine produced no usable result — failing closed. The log carries a reason= tag naming which check failed."
             fi

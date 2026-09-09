@@ -133,27 +133,44 @@ const body = JSON.stringify({
 // Retry belongs at the proxy, which is the layer that knows whether the request
 // was idempotent. If this ever needs its own, it has to be the statuses the
 // proxy passes through, not a second copy of its list.
-const res = await fetch(llmUrl, {
-  method: "POST",
-  headers: {
-    "content-type": "application/json",
-    [llmAuthHeader]: "Bearer " + llmToken,
-    // THE ANGLE, so a router recipe can put this call on its own model.
-    //
-    // --model is normally the router ALIAS (action.yml passes it when judge-model
-    // is unset), and an alias resolves through the workspace's DSL, which has no
-    // other way to tell a judge call from a review call: the reviewer stamps no
-    // angle. Without this header the judge takes the recipe's default — the
-    // reviewer's own model — and a judge scoring work its own model produced
-    // agrees with it, so the pass goes inert while still reporting success.
-    //
-    // Harmless when --model names a concrete model: nothing resolves an alias, so
-    // nothing reads the header. Sent unconditionally rather than only for aliases
-    // because "is this an alias" is the gateway's judgement, not this script's.
-    "x-cr-lens": "judge",
-  },
-  body,
-});
+// WRAPPED, because a transport failure is a failure class too and it has to
+// arrive named. `fetch` rejects rather than returning a response when it
+// cannot reach the endpoint at all, so without this the process dies on an
+// unhandled rejection and the first line of stderr is a path inside undici.
+// action.yml quotes that first line as the reason in its summary annotation,
+// which would turn "the gateway is unreachable" into a stack frame.
+//
+// The message alone is not enough either: fetch collapses every transport
+// failure into the string "fetch failed" and puts the part worth reading —
+// ECONNREFUSED, a DNS failure, a headers timeout — in `cause`.
+let res;
+try {
+  res = await fetch(llmUrl, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      [llmAuthHeader]: "Bearer " + llmToken,
+      // THE ANGLE, so a router recipe can put this call on its own model.
+      //
+      // --model is normally the router ALIAS (action.yml passes it when judge-model
+      // is unset), and an alias resolves through the workspace's DSL, which has no
+      // other way to tell a judge call from a review call: the reviewer stamps no
+      // angle. Without this header the judge takes the recipe's default — the
+      // reviewer's own model — and a judge scoring work its own model produced
+      // agrees with it, so the pass goes inert while still reporting success.
+      //
+      // Harmless when --model names a concrete model: nothing resolves an alias, so
+      // nothing reads the header. Sent unconditionally rather than only for aliases
+      // because "is this an alias" is the gateway's judgement, not this script's.
+      "x-cr-lens": "judge",
+    },
+    body,
+  });
+} catch (e) {
+  const cause = e?.cause?.code || e?.cause?.message || "";
+  console.error(`could not reach the LLM: ${e?.message || e}${cause ? ` (${cause})` : ""}`);
+  process.exit(1);
+}
 const raw = await res.text();
 // The upstream body, not just the status: that text is how an operator tells the
 // gateway's own 5xx from one it passed through — and by the time it reaches here

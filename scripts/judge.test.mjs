@@ -498,6 +498,52 @@ describe("transport and envelope failures", () => {
     assert.match(r.stderr, /judge did not return JSON/);
   });
 
+  // AN UNREACHABLE GATEWAY IS A FAILURE CLASS TOO, and it has to arrive named.
+  // `fetch` rejects rather than returning a response when it cannot reach the
+  // endpoint at all, so with no catch the process died on an unhandled rejection
+  // and the first line of stderr was a path inside undici. action.yml quotes
+  // that first line as the reason in its summary annotation, which turned "the
+  // gateway is unreachable" into a stack frame — no class, no fix implied.
+  //
+  // The no-stack-trace assertion is the load-bearing one: a `catch` that merely
+  // re-printed the error would still satisfy the message match.
+  test("an unreachable endpoint is named, not a stack trace", async () => {
+    // A port that was bound and released is reliably closed, unlike a guess.
+    const probe = http.createServer();
+    const closedPort = await listen(probe);
+    await new Promise((r) => probe.close(r));
+
+    const out = join(dir, `${(seq += 1)}-unreachable.json`);
+    const r = await spawnJudge([writeInput([finding("[P1] x")]), "--model", "m", "--out", out], {
+      OCR_LLM_URL: `http://127.0.0.1:${closedPort}/v1/chat/completions`,
+      OCR_LLM_TOKEN: "t",
+    });
+
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /could not reach the LLM/);
+    assert.match(r.stderr, /ECONNREFUSED/, "the cause carries the part worth reading");
+    assert.doesNotMatch(r.stderr, /node:internal/, "an unhandled rejection must not be the diagnostic");
+    assert.equal(existsSync(out), false);
+  });
+
+  // Every terminal failure names its class on the FIRST line, because that is
+  // the line action.yml lifts into the summary. The judge's bad-reply message is
+  // followed by a dump of what the model actually said, so a `tail` would quote
+  // a fragment of the bad completion in place of the reason.
+  test("the first stderr line names the class, for every terminal failure", async () => {
+    const cases = [
+      [{ status: 400, reply: "{}" }, /^HTTP 400: /],
+      [{ status: 401, reply: "{}" }, /^HTTP 401: /],
+      [{ envelope: "not json at all" }, /^bad completion envelope: /],
+      [{ reply: "Sure! Here are my thoughts\nabout the finding." }, /^judge did not return JSON:$/],
+    ];
+    for (const [opts, expected] of cases) {
+      const r = await judge({ comments: [finding("[P1] x")], reply: "{}", ...opts });
+      assert.equal(r.status, 1);
+      assert.match(r.stderr.split("\n")[0], expected);
+    }
+  });
+
   test("a fenced ```json reply is unwrapped", async () => {
     const r = await judge({
       comments: [finding("[P1] x")],

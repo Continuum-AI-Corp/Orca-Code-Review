@@ -173,12 +173,15 @@ describe("the ❌ count follows block-on", () => {
   // the summary read "❌ 0 findings block merge" beside a held tier line. There is
   // no withholding any more, so what survives is the case that was never about
   // held runs at all.
-  test("the count follows --block-on, not --fix-first", () => {
+  test("the count follows --block-on, and a removed flag cannot steer it", () => {
     // --fix-first is deliberately a DIFFERENT set here: it used to steer this
-    // count on a held run, and now it must not steer it at all.
+    // count on a held run, and now it must not steer it at all. It is no longer
+    // parsed, and it sits in the MIDDLE of the argv on purpose — the flag AND
+    // its value have to be skipped without shifting the --block-on that follows,
+    // which is what lets this script ship ahead of a caller still passing it.
     const out = run(
       ["[P0] a", "[P2] b"],
-      ["--push", "1", "--gate", "blocked", "--block-on", "P2", "--fix-first", "P0"],
+      ["--push", "1", "--fix-first", "P0", "--gate", "blocked", "--block-on", "P2"],
     );
     assert.ok(out.includes("❌ 1 finding blocks merge"), `got:
 ${out}`);

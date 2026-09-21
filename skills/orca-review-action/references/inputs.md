@@ -3,6 +3,12 @@
 Every input of `Continuum-AI-Corp/orca-code-review@v1`. Read the row before
 answering a question about behavior — do not guess a default.
 
+**These rows describe this action.** The hosted OrcaCode Review GitHub App runs a
+different review engine, so a setting of the same name can behave differently
+there — `fix-first` and `exhaustive` in particular. For the App, the console at
+**OrcaRouter → Apps → OrcaCode Review** is the authority; do not answer a question
+about the App from this file.
+
 ## Required
 
 | Input | Default | What it does |

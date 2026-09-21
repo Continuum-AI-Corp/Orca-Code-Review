@@ -248,7 +248,7 @@ runs:
           "$RUNNER_TEMP/pr.diff" "$RUNNER_TEMP/diff-guard.json" "$RUNNER_TEMP/prev-summary.md" \
           "$RUNNER_TEMP/wallclock-timeout" "$RUNNER_TEMP/judge-unavailable" \
           "$RUNNER_TEMP/cr-usage.jsonl" \
-          "$RUNNER_TEMP/cr-clean" \
+          "$RUNNER_TEMP/cr-clean" "$RUNNER_TEMP/cr-actor" "$RUNNER_TEMP/cr-plan.json" \
           "$RUNNER_TEMP/result.l1.json" "$RUNNER_TEMP/result.l2.json" \
           "$RUNNER_TEMP/result-extra.l1.json" "$RUNNER_TEMP/result-extra.l2.json" \
           "$RUNNER_TEMP/result.l2.log" "$RUNNER_TEMP/result-extra.l2.log"
@@ -335,28 +335,33 @@ runs:
           exit 0
         fi
 
-        # JUST REACT. This used to record the id the POST returned so the clear
-        # step could delete exactly it — first unconditionally, then only on a
-        # 201 — and each version needed a JSON parse that node is not yet
-        # available for at this point in the job. The last one was a greedy
-        # expression that picked the nested author id out of a compact response,
-        # so the DELETE would have targeted the wrong resource.
+        # JUST REACT — and carry who we reacted as. The id used to be recorded
+        # so the clear could delete exactly it; every version needed a parse
+        # that node is not yet available for, and the last one picked the
+        # nested author id out of a compact response. The id is still not
+        # needed: the settle step declines to manage reactions at all when
+        # github-token is a user, so there is nothing here to tell "ours"
+        # from the token owner's.
         #
-        # The id existed to tell OUR reaction from the token owner's. That
-        # question is settled once, in the settle step, by declining to manage
-        # reactions at all when github-token is a user rather than an app — so
-        # there is nothing here to record, and nothing to parse.
+        # The LOGIN is. GET /user has no authenticated user for an
+        # installation token, and guessing github-actions[bot] left every
+        # custom App's 👀 in place forever. The POST already returns the
+        # author — `gh api --jq` reads it without node — and settle
+        # (scripts/authority.mjs) uses that observed identity first.
         #
         # Two concurrent runs as the same app share one reaction, so the first to
-        # finish clears it while the second is still working. Accepted: a missing
-        # 👀 for a few minutes is cosmetic, and every mechanism that avoided it
-        # cost more correctness elsewhere than it bought.
+        # finish clears it while the second is still working. Accepted as a
+        # missing-👀 cosmetic only when the first run is still the authority;
+        # a stale run finishing first now stands down (same planner).
         react() {
-          if gh api -X POST "$1" -f content=eyes >/dev/null 2>&1; then
-            echo "reacted 👀 -> $1"
-          else
-            echo "warning: failed to react at $1 (non-fatal)"
-          fi
+          login=$(gh api -X POST "$1" -f content=eyes --jq .user.login 2>/dev/null) || login=""
+          case "$login" in
+            ""|null|undefined) echo "warning: failed to react at $1 (non-fatal)" ;;
+            *)
+              printf '%s\n' "$login" > "$RUNNER_TEMP/cr-actor"
+              echo "reacted 👀 -> $1 as $login"
+              ;;
+          esac
         }
         # Always react on the PR body (issue reactions endpoint — PRs are issues).
         if [ -n "${PR_NUMBER:-}" ]; then
@@ -1352,14 +1357,58 @@ runs:
         # to declare a run clean put "No findings" and a 👍 on a pull request
         # whose own summary listed the findings three lines above.
         RESULT_FOUND: ${{ runner.temp }}/result-reported.json
+        AUTHORITY: ${{ github.action_path }}/scripts/authority.mjs
+        RUN_ID: ${{ github.run_id }}
+        WORKFLOW: ${{ github.workflow }}
       with:
         github-token: ${{ inputs.github-token }}
         script: |
           const fs = require('fs');
+          const { execFileSync } = require('child_process');
           const brand = process.env.BRAND;
           const num = Number(process.env.PR_NUMBER);
           const sha = process.env.HEAD_SHA;
           const repo = { owner: context.repo.owner, repo: context.repo.repo };
+
+          // ONE PLANNER for clean publication and (later) reaction settlement.
+          // A head comparison living only in the always() settle step cannot
+          // prevent or retract a clean verdict this step already posted, and
+          // the issue-comment fallback has no commit association at all.
+          const planClean = async () => {
+            let current = '';
+            try {
+              const { data: live } = await github.rest.pulls.get({ ...repo, pull_number: num });
+              current = live.head && live.head.sha || '';
+            } catch (e) {
+              console.log('could not re-read the PR head (non-fatal):', e.message);
+            }
+            let siblings = '[]';
+            try {
+              const { data } = await github.rest.actions.listWorkflowRunsForRepo({
+                ...repo, head_sha: sha, per_page: 50,
+              });
+              siblings = JSON.stringify((data.workflow_runs || []).map((r) => ({ id: r.id, name: r.name })));
+            } catch (e) {
+              // actions:read is not in the example workflow. Head match still
+              // answers finding 3; sibling comparison is best-effort.
+              console.log('could not list sibling runs (non-fatal):', e.message);
+            }
+            try {
+              return JSON.parse(execFileSync('node', [
+                process.env.AUTHORITY, '--settle',
+                '--reviewed', sha || '',
+                '--current', current,
+                '--run-id', process.env.RUN_ID || '',
+                '--workflow', process.env.WORKFLOW || '',
+                '--siblings', siblings,
+                '--clean',
+              ], { encoding: 'utf8' }));
+            } catch (e) {
+              // Fail closed for a clean verdict: "could not tell" is not a yes.
+              console.log('settlement planner failed (non-fatal):', e.message);
+              return { publishClean: false, reason: 'settlement planner failed' };
+            }
+          };
 
           let result = { comments: [] };
           try {
@@ -1426,6 +1475,17 @@ runs:
             // Still one timeline entry per push, which was the original worry.
             // That is what the 👍 is for: the entry states the result once, and
             // the reaction is the at-a-glance version that updates in place.
+            //
+            // ONLY WHEN THIS RUN IS STILL THE AUTHORITY. The planner is the
+            // same function the settle step uses: a superseded head, or a
+            // newer sibling on this head, must not publish "✅ No findings"
+            // — the check that used to live only in reaction settlement
+            // could neither prevent nor retract this message.
+            const allowed = await planClean();
+            if (!allowed.publishClean) {
+              console.log(`not posting a clean verdict: ${allowed.reason}`);
+              return;
+            }
             const cleanBody =
               `## 🐳 ${brand}\n\n` +
               `✅ **No findings** — nothing to flag in this PR. Great work!`;
@@ -1723,47 +1783,71 @@ runs:
         HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
         EVENT_NAME: ${{ github.event_name }}
         COMMENT_ID: ${{ github.event.comment.id }}
+        AUTHORITY: ${{ github.action_path }}/scripts/authority.mjs
+        RUN_ID: ${{ github.run_id }}
+        WORKFLOW: ${{ github.workflow }}
       run: |
-        # ONE GATE FOR BOTH REACTIONS: is this token an app?
+        # FACTS, then ONE PLAN. Identity, "are we still the authority", and
+        # which reactions to write used to be a gate at each call site — a
+        # guessed github-actions[bot] login, a head comparison only the thumb
+        # saw, a delete the clean post had already raced. scripts/authority.mjs
+        # is that decision; this step only gathers what the planner cannot see
+        # and does what it says.
         #
-        # GitHub cannot be asked "which reaction did I create" after the fact, so
-        # the only handle is the author — and when github-token is a maintainer's
-        # PAT, their manual 👀 or 👍 and ours have the same author. Three rounds
-        # of review went into narrowing that predicate with recorded ids and
-        # status codes; every version needed a parse, and the parses were where
-        # the bugs were. Declining at the boundary removes the question instead
-        # of answering it more precisely each time.
-        #
-        # The review body and the summary say everything the reactions would.
-        # ONLY AN EXPLICIT "User" DECLINES. `gh api user` needs a user-scoped
-        # token, and github-token defaults to ${{ github.token }} — an
-        # installation token, for which that endpoint returns no user. The old
-        # `|| echo "Bot"` fallback was meant to cover that and did not: the call
-        # can exit 0 with no `.type`, so ME_TYPE came back empty, `!= "Bot"` held,
-        # and the reaction was skipped for EVERY consumer on the default token —
-        # the case this exists to serve. Measured on a real run: "belongs to a
-        # user, not an app" while the reaction author was github-actions[bot].
-        #
-        # Inverted to fail towards acting: a PAT identifies itself as type User,
-        # and anything else — 403, empty, Bot — reacts.
+        # ONLY AN EXPLICIT "User" DECLINES, and the planner says so: `gh api
+        # user` needs a user-scoped token, and github-token defaults to
+        # ${{ github.token }} — an installation token, for which that
+        # endpoint returns no user. A PAT identifies itself as type User;
+        # 403, empty, Bot all react.
         ME_TYPE=$(gh api user --jq .type 2>/dev/null) || ME_TYPE=""
-        if [ "$ME_TYPE" = "User" ]; then
-          echo "github-token belongs to a user, not an app; leaving reactions alone"
+        ME_LOGIN=$(gh api user --jq .login 2>/dev/null) || ME_LOGIN=""
+        CREATED_BY=""
+        if [ -f "$RUNNER_TEMP/cr-actor" ]; then
+          CREATED_BY=$(tr -d '\r\n' < "$RUNNER_TEMP/cr-actor")
+        fi
+        APP_SLUG=$(gh api "repos/$REPO/installation" --jq .app_slug 2>/dev/null) || APP_SLUG=""
+        CURRENT_SHA=""
+        if [ -n "${PR_NUMBER:-}" ]; then
+          CURRENT_SHA=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq .head.sha 2>/dev/null) || CURRENT_SHA=""
+        fi
+        SIBLINGS='[]'
+        if [ -n "${HEAD_SHA:-}" ]; then
+          SIBLINGS=$(gh api "repos/$REPO/actions/runs?head_sha=${HEAD_SHA}&per_page=50" \
+            --jq '[.workflow_runs[] | {id:.id, name:.name}]' 2>/dev/null) || SIBLINGS='[]'
+        fi
+        CLEAN_FLAG=""
+        [ -f "$RUNNER_TEMP/cr-clean" ] && CLEAN_FLAG="--clean"
+        PLAN_FILE="$RUNNER_TEMP/cr-plan.json"
+        if ! node "$AUTHORITY" --settle \
+          --token-type "$ME_TYPE" \
+          --user-login "$ME_LOGIN" \
+          --created-by "$CREATED_BY" \
+          --app-slug "$APP_SLUG" \
+          --reviewed "$HEAD_SHA" \
+          --current "$CURRENT_SHA" \
+          --run-id "$RUN_ID" \
+          --workflow "$WORKFLOW" \
+          --siblings "$SIBLINGS" \
+          $CLEAN_FLAG > "$PLAN_FILE"; then
+          echo "warning: settlement planner failed (non-fatal); leaving reactions alone"
           exit 0
         fi
-        # SAME TRAP AS THE TYPE PROBE, and it survived the fix to that one: with an
-        # installation token `gh api user` can exit 0 and print nothing, so
-        # `|| echo` never fires and ME came back EMPTY. The delete filter then read
-        # `select(.user.login=="")`, matched nothing, and the 👀 stayed on the PR
-        # for ever while the step reported success. Observed on a clean run that
-        # placed both 👀 and 👍 and cleared neither.
-        #
-        # Test the VALUE, not the exit status.
-        ME=$(gh api user --jq .login 2>/dev/null) || ME=""
-        [ -n "$ME" ] || ME="github-actions[bot]"
+        if [ ! -s "$PLAN_FILE" ]; then
+          echo "warning: settlement planner produced no plan (non-fatal); leaving reactions alone"
+          exit 0
+        fi
+        node -e 'const p=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); console.log(p.reason||"")' "$PLAN_FILE"
+
+        field() { node -e 'const p=JSON.parse(require("fs").readFileSync(process.env.PLAN_FILE,"utf8")); const v=p[process.argv[1]]; if (typeof v==="boolean") process.exit(v?0:1); process.stdout.write(String(v??""))' "$1"; }
+        export PLAN_FILE
+        ME=$(field actor)
 
         # ------------------------------------------------------------------
         # 👀 — it said "I am looking at this", and the run has stopped looking.
+        # Only the authoritative run clears: a stale finish must not take the
+        # acknowledgement off a newer run that is still working, and must not
+        # match the wrong login (the planner resolved custom-app[bot] from
+        # the create-response or the installation slug).
         clear_eyes() {
           ids=$(gh api "$1" --paginate \
             --jq '.[] | select(.content=="eyes") | select(.user.login=="'"$ME"'") | .id' \
@@ -1773,24 +1857,22 @@ runs:
               && echo "cleared 👀 -> $1/$id" || echo "warning: could not clear 👀 (non-fatal)"
           done
         }
-        if [ -n "${PR_NUMBER:-}" ]; then
-          clear_eyes "repos/$REPO/issues/$PR_NUMBER/reactions"
-        fi
-        if [ "$EVENT_NAME" = "issue_comment" ] && [ -n "${COMMENT_ID:-}" ]; then
-          clear_eyes "repos/$REPO/issues/comments/$COMMENT_ID/reactions"
+        if field clearEyes; then
+          if [ -n "${PR_NUMBER:-}" ]; then
+            clear_eyes "repos/$REPO/issues/$PR_NUMBER/reactions"
+          fi
+          if [ "$EVENT_NAME" = "issue_comment" ] && [ -n "${COMMENT_ID:-}" ]; then
+            clear_eyes "repos/$REPO/issues/comments/$COMMENT_ID/reactions"
+          fi
+        else
+          echo "not clearing 👀"
         fi
 
         # ------------------------------------------------------------------
-        # THE 👍 IS PLACED AND NEVER WITHDRAWN — a product decision, and it
-        # deletes more code than it adds rules.
-        #
-        # Withdrawing was the source of the concurrency problem this step kept
-        # growing conditions for: with no serialisation between invocations, an
-        # older findings run finishing after a newer clean one removed a thumb
-        # that correctly described the current head, and the justification for
-        # leaving the delete unguarded — "the current run re-adds it" — only held
-        # when the current run finished last, which nothing guarantees. Remove
-        # the withdrawal and the whole class goes with it.
+        # THE 👍 IS PLACED AND NEVER WITHDRAWN — a product decision. The
+        # planner decides whether THIS run may place it. A stale run on a
+        # superseded head, or an older sibling finishing after a newer one,
+        # gets addThumb=false; there is no delete for it to reach.
         #
         # What it costs, stated plainly: a head that was clean keeps its 👍 after
         # a later push breaks something. The review comment on that later push
@@ -1798,24 +1880,12 @@ runs:
         # of this PR reviewed clean" rather than "the current one does". The
         # hosted reviewer has made the same trade since it shipped, so the two
         # paths now agree about what the mark means.
-        #
-        # ONLY FOR THE HEAD THIS RUN REVIEWED, and that guard matters MORE now
-        # rather than less: a wrong add is permanent. An unconfirmed head counts
-        # as moved — "could not tell" is not evidence that it did not.
-        if [ ! -f "$RUNNER_TEMP/cr-clean" ]; then
-          echo "not a clean run; leaving 👍 alone"
-          exit 0
+        if field addThumb; then
+          gh api -X POST "repos/$REPO/issues/$PR_NUMBER/reactions" -f content=+1 >/dev/null 2>&1 \
+            && echo "👍 -> PR #$PR_NUMBER" || echo "warning: could not add 👍 (non-fatal)"
+        else
+          echo "not adding 👍"
         fi
-        CURRENT_SHA=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq .head.sha 2>/dev/null || echo "")
-        if [ "$CURRENT_SHA" != "$HEAD_SHA" ]; then
-          echo "cannot confirm this run still describes the PR head (${HEAD_SHA} vs ${CURRENT_SHA:-unknown}); leaving 👍 alone"
-          exit 0
-        fi
-        # POSTED UNCONDITIONALLY. Creating a reaction that already exists is a
-        # no-op at the API, so there is nothing to look up first — which also
-        # means the 👍 no longer depends on resolving our own login, and the
-        # custom-App identity gap is confined to clearing 👀.
-        gh api -X POST "repos/$REPO/issues/$PR_NUMBER/reactions" -f content=+1 >/dev/null 2>&1           && echo "👍 -> PR #$PR_NUMBER" || echo "warning: could not add 👍 (non-fatal)"
 
     - name: Clean up engine output
       if: always()
@@ -1836,7 +1906,7 @@ runs:
           "$RUNNER_TEMP/pr.diff" "$RUNNER_TEMP/diff-guard.json" "$RUNNER_TEMP/prev-summary.md" \
           "$RUNNER_TEMP/wallclock-timeout" "$RUNNER_TEMP/judge-unavailable" \
           "$RUNNER_TEMP/cr-usage.jsonl" \
-          "$RUNNER_TEMP/cr-clean" \
+          "$RUNNER_TEMP/cr-clean" "$RUNNER_TEMP/cr-actor" "$RUNNER_TEMP/cr-plan.json" \
           "$RUNNER_TEMP/result.l1.json" "$RUNNER_TEMP/result.l2.json" \
           "$RUNNER_TEMP/result-extra.l1.json" "$RUNNER_TEMP/result-extra.l2.json" \
           "$RUNNER_TEMP/result.l2.log" "$RUNNER_TEMP/result-extra.l2.log"

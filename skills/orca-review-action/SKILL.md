@@ -238,7 +238,7 @@ gh run list --workflow orca-code-review.yml --limit 5
 gh run view <run-id> --log-failed
 ```
 
-`references/troubleshooting.md` maps each symptom to its cause and fix. The four that
+`references/troubleshooting.md` maps each symptom to its cause and fix. The ones that
 account for most reports:
 
 - **"Review skipped" notice** — the PR is a draft and `trigger` is

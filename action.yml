@@ -30,8 +30,13 @@
 # (scripts/report.mjs) posts severity counts — never code — to the OrcaRouter
 # control plane after the gate.
 #
-# Security posture (SECURITY.md has the detail): a comment trigger runs only for
-# a maintainer's review command, checked here and not only in the workflow; the
+# Security posture (SECURITY.md has the detail): the action runs on an
+# allowlist of events; a comment trigger runs only for a maintainer's review
+# command, checked here and not only in the workflow, and on a fork PR only for
+# the commit it names while that is still the head; a push to a fork PR is
+# auto-reviewed only if its pusher (not just its author) passes; the action's
+# own comments are recognised by one identity funnel (scripts/identity.mjs);
+# the key goes in clear only to this machine (scripts/gateway-url.mjs); the
 # checkout is hardened before anything reads it (scripts/harden-checkout.mjs);
 # the engine is installed from pinned, verified bytes (scripts/install-engine.mjs)
 # and never holds the API key — the proxy injects it; everything posted goes

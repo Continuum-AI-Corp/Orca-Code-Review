@@ -506,6 +506,9 @@ runs:
       if: steps.pr.outputs.run == 'true'
       shell: bash
       env:
+        # The one judge of where the key may go (https, or http to this
+        # machine), asked before anything sends it.
+        GATEWAY_URL_CHECK: ${{ github.action_path }}/scripts/gateway-url.mjs
         SETTINGS_SCRIPT: ${{ github.action_path }}/scripts/settings.mjs
         SETTINGS_ENABLED: ${{ inputs.settings }}
         ORCAROUTER_URL: ${{ inputs.orcarouter-url }}
@@ -522,6 +525,13 @@ runs:
         REPO_PRIVATE: ${{ steps.pr.outputs.repo_private }}
         BRAND: ${{ inputs.brand }}
       run: |
+        # THE FIRST STEP THAT READS orcarouter-url judges it, for every run: the
+        # key would go there as a Bearer header (this fetch, the review proxy,
+        # the run report), and in clear it may go only to this machine. A
+        # refusal names the input and the fix (scripts/gateway-url.mjs).
+        # (`:?` — an unset path must fail, not run `node ""`, which exits 0.)
+        node "${GATEWAY_URL_CHECK:?}" || exit 1
+
         # The auto-event gate is defined UP FRONT — before the settings-disabled
         # short-circuit — so BOTH the settings-disabled (workflow-file-
         # authoritative) and settings-enabled (dashboard) paths share the exact

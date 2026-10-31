@@ -148,8 +148,12 @@ Failure modes are closed:
   the key from a file rather than its environment because a same-user process
   can read `/proc/<pid>/environ`.
 - **The proxy forwards to one place only**: the configured endpoint's exact
-  path, on its exact origin, over https (plain http only for a loopback host).
-  Absolute-form, scheme-relative and backslash request targets are refused.
+  path, on its exact origin, over https (plain http only to this machine:
+  `localhost`, `127.0.0.0/8`, `[::1]`). Absolute-form, scheme-relative and
+  backslash request targets are refused. The same judge
+  (`scripts/gateway-url.mjs`) is asked before the settings fetch and the run
+  report send the key, and by the first step that reads `orcarouter-url`, which
+  fails the run with an error naming the input and the fix.
 - **Nothing the action posts can carry it.** Every posting call redacts the key
   and the GitHub token — raw, base64 at any alignment, base64url,
   URL-encoded, hex in either letter case, as the Basic-auth value, and split

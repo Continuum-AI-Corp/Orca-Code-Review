@@ -104,6 +104,7 @@
 
 import http from "node:http";
 import https from "node:https";
+import { checkedGatewayUrl } from "./gateway-url.mjs";
 import fs from "node:fs";
 import { URL, pathToFileURL } from "node:url";
 
@@ -323,16 +324,14 @@ function retryDelayMs(retryIndex, retryAfter) {
   return BACKOFF_MS[Math.min(retryIndex, BACKOFF_MS.length - 1)];
 }
 
-const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
-
-// The one upstream this proxy may talk to. https, or http to a loopback host.
+// The one upstream this proxy may talk to: what scripts/gateway-url.mjs (the
+// one judge of where the key may go) accepts — https, or http to this machine.
 export function pinnedUpstream(upstreamUrl) {
-  const u = new URL(upstreamUrl);
-  if (u.protocol === "https:") return u;
-  if (u.protocol === "http:" && LOOPBACK_HOSTS.has(u.hostname)) return u;
-  throw new Error(
-    `fact-proxy: refusing upstream ${u.protocol}//${u.host} — the gateway must be https (plain http is allowed for a loopback host only)`,
-  );
+  try {
+    return checkedGatewayUrl(upstreamUrl);
+  } catch (e) {
+    throw new Error(`fact-proxy: refusing the upstream — ${e.message}`);
+  }
 }
 
 // The forwarding URL for one client request target, or null when the target

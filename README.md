@@ -281,7 +281,7 @@ Security hardening that changes what you may see. The installer, the example wor
 | A settings fetch that gets no settings — a 4xx (an ordinary, non-CI key gets one on every run) or an outage | The workflow's inputs apply for that run, exactly as with `settings: "false"`, and the log names the cause. `block-on` in the workflow is the outage floor: set it to what the dashboard enforces if an outage must not loosen the gate | — |
 | The gate fails closed | A result the gate cannot read now fails the check instead of passing | — |
 | `engine-version` must be pinned | Only versions with checksums in `scripts/engine-pins.json` install; anything else fails the run | — |
-| `orcarouter-url` must be https | A plain-http gateway URL is refused (loopback excepted) | — |
+| `orcarouter-url` must be https | A plain-http gateway URL fails the run at its first step, with an error naming `orcarouter-url` and the fix (put TLS in front of a self-hosted gateway). Plain http stays allowed to this machine — `localhost`, `127.0.0.0/8`, `[::1]`. The settings fetch and the run report no longer send the key over plain http either | — |
 | What is posted is sanitised | @mentions don't ping, HTML is shown as text, off-site links are shown as code, at most 50 findings are posted per review, guardrail details are hidden on public repos | — |
 | The checkout is hardened | Symlinks are removed, the PR's `.gitattributes` cannot hide the diff, the base `.gitignore` applies; the summary lists changed files the engine skips | — |
 | Severity is never lowered | Duplicates keep the most severe tag; the judge cannot drop a P0 or a security finding | — |

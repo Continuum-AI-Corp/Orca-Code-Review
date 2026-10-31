@@ -62,6 +62,7 @@ function runSettings({ written, inputBlockOn = "P0,P1", inputFixFirst = "P0,P1",
   );
   const r = runBashStep(step("settings").run, {
     env: {
+      GATEWAY_URL_CHECK: path.join(ROOT, "scripts", "gateway-url.mjs"),
       SETTINGS_SCRIPT: stubScript,
       SETTINGS_ENABLED: "true",
       ORCAROUTER_URL: "http://127.0.0.1:9/v1/chat/completions",
@@ -199,6 +200,7 @@ describe("end to end: the real settings fetch answering 403, 404, 500, or never"
       try {
         const r = await runBashStepAsync(step("settings").run, {
           env: {
+            GATEWAY_URL_CHECK: path.join(ROOT, "scripts", "gateway-url.mjs"),
             SETTINGS_SCRIPT: path.join(ROOT, "scripts", "settings.mjs"),
             SETTINGS_ENABLED: "true",
             ORCAROUTER_URL: `http://127.0.0.1:${gw.port}/v1/chat/completions`,

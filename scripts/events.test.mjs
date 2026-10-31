@@ -158,6 +158,8 @@ function settingsDecision({ authors = "", assoc = "NONE", isPrivate = "false", e
   fs.writeFileSync(out, "");
   const r = runBashStep(step("settings").run, {
     env: {
+      GATEWAY_URL_CHECK: path.join(ROOT, "scripts", "gateway-url.mjs"),
+      ORCAROUTER_URL: "https://api.orcarouter.ai/v1/chat/completions",
       SETTINGS_ENABLED: "false",
       INPUT_FIX_FIRST: "P0,P1",
       INPUT_BLOCK_ON: "P0,P1",

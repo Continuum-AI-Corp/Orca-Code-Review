@@ -48,6 +48,7 @@
 import fs from "node:fs";
 import { SEVERITIES } from "./severity.mjs";
 import { controlPlaneBase } from "./control-plane.mjs";
+import { gatewayUrlProblem } from "./gateway-url.mjs";
 
 // Per attempt. CR_SETTINGS_TIMEOUT_MS overrides it (the tests use a short one).
 const TIMEOUT_MS = Number(process.env.CR_SETTINGS_TIMEOUT_MS) > 0 ? Number(process.env.CR_SETTINGS_TIMEOUT_MS) : 5000;
@@ -153,7 +154,7 @@ const fallbackSettings = (status = "unavailable", cause = "unknown") => ({
   ...DEFAULTS,
   unresolved: Object.keys(DEFAULTS),
   status,
-  cause: String(cause).replace(/[\r\n]+/g, " ").slice(0, 200),
+  cause: String(cause).replace(/[\r\n]+/g, " ").slice(0, 400),
 });
 
 // A failed fetch, classified: status "no_settings" (the gateway said no — do
@@ -209,6 +210,12 @@ async function fetchOnce(endpoint, key) {
 }
 
 async function resolveSettings(opts) {
+  // The key goes out as a Bearer header: never in clear off this machine.
+  const refused = gatewayUrlProblem(opts.url);
+  if (refused) {
+    console.error(`settings: not sending the key — ${refused}`);
+    return fallbackSettings("unavailable", refused);
+  }
   let endpoint;
   try {
     endpoint = `${controlPlaneBase(opts.url)}/api/code_review/settings?repo=${encodeURIComponent(opts.repo)}`;

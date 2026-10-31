@@ -20,7 +20,7 @@ about the App from this file.
 
 | Input | Default | What it does |
 | --- | --- | --- |
-| `orcarouter-url` | `https://api.orcarouter.ai/v1/chat/completions` | Chat-completions endpoint. Change only for a self-hosted gateway. From v1.7.0 (unreleased) it must be https (plain http is accepted only to this machine's loopback). |
+| `orcarouter-url` | `https://api.orcarouter.ai/v1/chat/completions` | Chat-completions endpoint. Change only for a self-hosted gateway. From v1.7.0 (unreleased) it must be https; plain http is accepted only to this machine (`localhost`, `127.0.0.0/8`, `[::1]`), and anything else fails the run naming this input. |
 | `github-token` | `${{ github.token }}` | Fetches the PR head, posts review comments, and reacts to a `/orcacode-review` command. From v1.7.0 (unreleased) it also writes the commit status on the PR head, which needs `statuses: write`. |
 | `bot-login` | `""` | From v1.7.0 (unreleased). The login the action posts as when `github-token` is a GitHub App's installation token other than the job's own (e.g. `my-app[bot]`); it recognises its earlier notices by it. Not needed for the default `github.token` or a personal token. |
 | `brand` | `OrcaCode Review` | Name shown on PR comments. |

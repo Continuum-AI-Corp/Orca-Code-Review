@@ -331,7 +331,7 @@ runs:
     # retarget re-reviews against the new base; a title edit does not).
     - name: Resolve PR refs
       id: pr
-      uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
       env:
         IDENTITY: ${{ github.action_path }}/scripts/identity.mjs
         BRAND: ${{ inputs.brand }}
@@ -603,7 +603,7 @@ runs:
 
     # setup-node runs BEFORE checkout (it never reads the workspace) so the
     # settings fetch below has node available even on a bare self-hosted runner.
-    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
       if: steps.pr.outputs.run == 'true'
       with:
         node-version: "20"
@@ -864,7 +864,7 @@ runs:
     # a merge for a customer who requires it. "fail" fails the job too.
     - name: Skip review (settings)
       if: steps.settings.outputs.decision == 'skip'
-      uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
       env:
         # Only comments this identity wrote count as the action's own (markers).
         BOT_LOGIN: ${{ steps.pr.outputs.bot_login }}
@@ -946,7 +946,7 @@ runs:
             );
           }
 
-    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       if: steps.settings.outputs.decision == 'review'
       with:
         fetch-depth: 0 # full history for the merge-base diff
@@ -1042,7 +1042,7 @@ runs:
     # "pass" restores the advisory behavior (notice + green check).
     - name: Skip review (diff too large)
       if: steps.guard.outputs.decision == 'skip'
-      uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
       env:
         # Only comments this identity wrote count as the action's own (markers).
         BOT_LOGIN: ${{ steps.pr.outputs.bot_login }}
@@ -1671,7 +1671,7 @@ runs:
     # skipped run (the review step's own cleanup never ran on a skip).
     - name: Surface guardrail / firewall block
       if: always() && steps.settings.outputs.decision == 'review' && steps.guard.outputs.decision == 'review'
-      uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
       env:
         # Only comments this identity wrote count as the action's own (markers).
         BOT_LOGIN: ${{ steps.pr.outputs.bot_login }}
@@ -1825,7 +1825,7 @@ runs:
 
     - name: Post review comments
       if: steps.settings.outputs.decision == 'review' && steps.guard.outputs.decision == 'review'
-      uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
       env:
         BRAND: ${{ inputs.brand }}
         PR_NUMBER: ${{ steps.pr.outputs.number }}
@@ -2073,7 +2073,7 @@ runs:
     # Runs BEFORE the enforce step so a blocked run still updates the summary.
     - name: Summary (PR description)
       if: steps.settings.outputs.decision == 'review' && steps.guard.outputs.decision == 'review'
-      uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
       env:
         # Only comments this identity wrote count as the action's own (markers).
         BOT_LOGIN: ${{ steps.pr.outputs.bot_login }}
@@ -2293,7 +2293,7 @@ runs:
     - name: Publish the review status
       id: status
       if: always() && steps.pr.outputs.run == 'true'
-      uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
       env:
         STATUS_SCRIPT: ${{ github.action_path }}/scripts/review-status.mjs
         STATUS_CONTEXT: ${{ inputs.status-context }}

@@ -310,6 +310,11 @@ runs:
     # Which event this is, whether the action acts on it at all, and the PR it
     # is about. `run` is the verdict every later step is gated on.
     #
+    # IT RUNS ON AN ALLOWLIST OF EVENTS: pull_request / pull_request_target
+    # (opened, synchronize, reopened, ready_for_review, edited) and issue_comment
+    # (created). Anything else — a review, a review comment, a push, a label — is
+    # a successful no-op that says why.
+    #
     # THE ACTION CHECKS A COMMENT TRIGGER ITSELF. The shipped workflows gate the
     # /orcacode-review command in their `if:`, but a workflow written by hand
     # (or the bare `uses:` a quickstart shows) may not, and then ANY comment by
@@ -339,6 +344,26 @@ runs:
             core.setOutput('stop_reason', why);
             core.notice(`OrcaCode Review: not running — ${why}.`);
           };
+          // THE EVENTS THE ACTION RUNS ON — an allowlist. Anything that was not
+          // an issue_comment used to fall into the pull_request* auto-review
+          // gate, which is keyed on the PR's AUTHOR: a workflow listening to
+          // pull_request_review(_comment) ran a paid review on a maintainer's
+          // PR whenever anyone left a review comment. Everything else is a
+          // successful no-op that says why.
+          const PR_ACTIONS = ['opened', 'synchronize', 'reopened', 'ready_for_review', 'edited'];
+          const ALLOWED_EVENTS = {
+            pull_request: PR_ACTIONS,
+            pull_request_target: PR_ACTIONS,
+            issue_comment: ['created'],
+          };
+          const allowed = Object.prototype.hasOwnProperty.call(ALLOWED_EVENTS, context.eventName)
+            ? ALLOWED_EVENTS[context.eventName] : null;
+          if (!allowed || !allowed.includes(payload.action)) {
+            return stop(
+              `it does not run on ${context.eventName}${payload.action ? ` (${payload.action})` : ''} — only on ` +
+              `pull_request / pull_request_target (${PR_ACTIONS.join(', ')}) and issue_comment (created)`,
+            );
+          }
           if (context.eventName === 'issue_comment') {
             const c = payload.comment || {};
             const body = String(c.body || '').toLowerCase();

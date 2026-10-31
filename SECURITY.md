@@ -87,6 +87,12 @@ On a **public** repository the recommended `pull_request_target` trigger runs th
 review for fork PRs, and `pull_request_target` bypasses GitHub's "require
 approval to run workflows from fork PRs" gate. The review key is wallet-metered.
 
+- **Events**: the action runs only on `pull_request` / `pull_request_target`
+  (`opened`, `synchronize`, `reopened`, `ready_for_review`, and `edited` when the
+  base changed) and `issue_comment` (`created`). Any other event a workflow
+  wires it to — `pull_request_review`, `pull_request_review_comment`, a push, a
+  label — exits successfully without a review and says why, so a reviewer's
+  comment cannot start a paid review of someone else's PR.
 - **Automatic reviews**: when `auto-review-authors` is not set, a public
   repository (or one whose visibility the event does not state) auto-reviews
   only `OWNER`, `MEMBER` and `COLLABORATOR` authors; a private repository

@@ -127,6 +127,58 @@ describe("Resolve PR refs: pull_request_target events", () => {
   });
 });
 
+// CR-10: only issue_comment went through the comment refusal; every other event
+// fell into the pull_request* auto-review gate, keyed on the PR AUTHOR — so a
+// workflow listening to pull_request_review_comment or pull_request_review ran
+// a paid review on a maintainer's PR whenever anyone commented a review. The
+// action now runs on an explicit allowlist and refuses everything else as a
+// successful no-op that says why.
+describe("Resolve PR refs: an explicit allowlist of events", () => {
+  const ALLOWED = [];
+  for (const ev of ["pull_request", "pull_request_target"]) {
+    for (const action of ["opened", "synchronize", "reopened", "ready_for_review"]) ALLOWED.push([ev, prEvent(action)]);
+  }
+  for (const [ev, payload] of ALLOWED) {
+    test(`${ev}/${payload.action} -> runs`, async () => {
+      assert.equal((await resolve(ev, payload)).outputs.run, "true");
+    });
+  }
+
+  const reviewPayload = {
+    action: "submitted",
+    review: { id: 9, body: "LGTM", user: { login: "outsider" }, author_association: "NONE" },
+    pull_request: prEvent("x").pull_request,
+  };
+  const reviewCommentPayload = {
+    action: "created",
+    comment: { id: 9, body: "nit", user: { login: "outsider" }, author_association: "NONE" },
+    pull_request: prEvent("x").pull_request,
+  };
+  const REFUSED = [
+    ["pull_request_review", reviewPayload],
+    ["pull_request_review_comment", reviewCommentPayload],
+    ["pull_request_target", prEvent("closed")],
+    ["pull_request_target", prEvent("labeled")],
+    ["pull_request_target", prEvent("assigned")],
+    ["pull_request", prEvent("converted_to_draft")],
+    ["issue_comment", { ...commentEvent("/orcacode-review", "OWNER"), action: "edited" }],
+    ["issue_comment", { ...commentEvent("/orcacode-review", "OWNER"), action: "deleted" }],
+    ["push", { ref: "refs/heads/main" }],
+    ["workflow_dispatch", {}],
+    ["schedule", {}],
+    ["merge_group", {}],
+  ];
+  for (const [ev, payload] of REFUSED) {
+    test(`${ev}${payload.action ? `/${payload.action}` : ""} -> refused, successfully, saying why`, async () => {
+      const rec = await resolve(ev, payload);
+      assert.equal(rec.outputs.run, "false");
+      assert.equal(rec.failed, null, "a refusal is a no-op, not a failed job");
+      assert.match(rec.outputs.stop_reason, new RegExp(ev));
+      assert.ok(rec.notices.some((n) => n.includes(ev)), rec.notices.join("\n"));
+    });
+  }
+});
+
 describe("every step after the ref resolver is gated on its verdict", () => {
   test("nothing runs when Resolve PR refs says run=false (no reaction, no settings fetch, no spend)", () => {
     const steps = actionSteps();

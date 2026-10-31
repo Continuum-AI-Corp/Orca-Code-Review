@@ -350,6 +350,22 @@ const INPUT_NOTES = {
   "auto-review-authors": "author allowlist for AUTOMATIC reviews",
 };
 
+// The answers to "who gets an automatic review?" on a public repository. The
+// action reads an UNSET auto-review-authors there as OWNER,MEMBER,COLLABORATOR,
+// so "Everyone" has to be written as the explicit opt-out "*" — written as ""
+// it would equal the default, be omitted, and mean maintainers only.
+export function authorChoices(t) {
+  return [
+    {
+      label: t("config.authorsKnown"),
+      value: "OWNER,MEMBER,COLLABORATOR,CONTRIBUTOR",
+      recommended: true,
+      detail: t("config.authorsKnownDetail"),
+    },
+    { label: t("config.authorsAll"), value: "*", detail: t("config.authorsAllDetail") },
+  ];
+}
+
 export function renderWorkflow(overrides) {
   const lines = Object.entries(overrides)
     .filter(([k, v]) => v !== undefined && v !== DEFAULTS[k])
@@ -473,18 +489,7 @@ async function askConfig(state, current = DEFAULTS) {
   if (state.visibility === "PUBLIC") {
     say();
     warn(t("config.publicWarning", CONSOLE_TOKENS));
-    out["auto-review-authors"] = await select(
-      t("config.authorsQ"),
-      [
-        {
-          label: t("config.authorsKnown"),
-          value: "OWNER,MEMBER,COLLABORATOR,CONTRIBUTOR",
-          recommended: true,
-          detail: t("config.authorsKnownDetail"),
-        },
-        { label: t("config.authorsAll"), value: "", detail: t("config.authorsAllDetail") },
-      ],
-    );
+    out["auto-review-authors"] = await select(t("config.authorsQ"), authorChoices(t));
   } else if (current["auto-review-authors"]) {
     out["auto-review-authors"] = current["auto-review-authors"];
   }

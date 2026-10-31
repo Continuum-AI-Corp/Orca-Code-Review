@@ -67,7 +67,7 @@ test("importing the CLI runs nothing", () => {
   assert.equal(r.status, 0, r.stderr);
   // ACTION_SHA / ACTION_VERSION joined the exports: the release the generated
   // workflow pins is read by release-pin.test.mjs and by publish.yml's gate.
-  assert.equal(r.stdout.trim(), "ACTION_SHA,ACTION_VERSION,DEFAULTS,parseOverrides,readOverrides,renderWorkflow");
+  assert.equal(r.stdout.trim(), "ACTION_SHA,ACTION_VERSION,DEFAULTS,authorChoices,parseOverrides,readOverrides,renderWorkflow");
 });
 
 test("the published version matches package.json", () => {
@@ -459,4 +459,21 @@ test("an unknown --mode is refused by name, with the choices", (t) => {
   assert.notEqual(r.status, 0);
   assert.match(r.stderr, /Unknown mode "remote"/);
   assert.match(r.stderr, /both \| local \| action/);
+});
+
+// ------------------------------------------------- public-repo author default ---
+
+// The action now reads an UNSET auto-review-authors as OWNER,MEMBER,COLLABORATOR
+// on a public repository, so the installer's "Everyone" answer can no longer be
+// written as the default (an omitted input): it must write the explicit opt-out.
+test('the public-repo "Everyone" answer writes the explicit "*" opt-out, not the default', async () => {
+  const { authorChoices } = await import(CLI);
+  const choices = authorChoices((k) => k);
+  const everyone = choices.find((c) => c.label === "config.authorsAll");
+  assert.equal(everyone.value, "*");
+  const yaml = renderWorkflow({ ...DEFAULTS, "auto-review-authors": everyone.value });
+  assert.match(yaml, /^\s+auto-review-authors: "\*"/m);
+  assert.equal(parseOverrides(yaml)["auto-review-authors"], "*");
+  const known = choices.find((c) => c.recommended);
+  assert.notEqual(known.value, "", "the recommended answer must be written, not left to a default");
 });

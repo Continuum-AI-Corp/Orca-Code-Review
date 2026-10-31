@@ -337,6 +337,20 @@ runs:
             authorAssoc = pr.author_association || 'NONE';
           }
           core.setOutput('run', 'true');
+          // WHO THE ACTION POSTS AS, resolved once. The marker lookups below
+          // (<!-- orca-code-review-* -->) only count a comment this identity
+          // wrote — otherwise anyone could plant a marker and have the action
+          // edit or delete THEIR comment. A personal token names its user; the
+          // default GITHUB_TOKEN has no user (the call is refused) and posts as
+          // github-actions[bot].
+          let botLogin = 'github-actions[bot]';
+          try {
+            const { data: me } = await github.rest.users.getAuthenticated();
+            if (me && me.login) botLogin = me.login;
+          } catch (e) {
+            // An installation token: keep github-actions[bot].
+          }
+          core.setOutput('bot_login', botLogin);
           core.setOutput('base', base);
           core.setOutput('head_sha', headSha);
           core.setOutput('number', String(num));
@@ -651,6 +665,8 @@ runs:
       if: steps.settings.outputs.decision == 'skip'
       uses: actions/github-script@v7
       env:
+        # Only comments this identity wrote count as the action's own (markers).
+        BOT_LOGIN: ${{ steps.pr.outputs.bot_login }}
         BRAND: ${{ inputs.brand }}
         PR_NUMBER: ${{ steps.pr.outputs.number }}
         REASON: ${{ steps.settings.outputs.reason }}
@@ -668,6 +684,11 @@ runs:
           // the OrcaRouter key and the GitHub token from what it sends.
           const guard = await import(require('url').pathToFileURL(process.env.PUBLISH_GUARD).href);
           const gh = guard.guardGithub(github);
+          // A marker counts only in a comment the action's own identity wrote.
+          // With no resolved identity nothing matches: post anew, edit nothing.
+          const mine = (c) =>
+            Boolean(process.env.BOT_LOGIN) && Boolean(c && c.body) &&
+            Boolean(c.user) && c.user.login === process.env.BOT_LOGIN;
           const brand = process.env.BRAND;
           const num = Number(process.env.PR_NUMBER);
           const repo = { owner: context.repo.owner, repo: context.repo.repo };
@@ -693,7 +714,7 @@ runs:
           const comments = await github.paginate(github.rest.issues.listComments, {
             ...repo, issue_number: num, per_page: 100,
           });
-          const existing = comments.find((c) => c.body && c.body.includes(MARKER));
+          const existing = comments.find((c) => mine(c) && c.body.includes(MARKER));
           if (!existing) {
             await gh.rest.issues.createComment({ ...repo, issue_number: num, body });
           } else if (existing.body !== body) {
@@ -804,6 +825,8 @@ runs:
       if: steps.guard.outputs.decision == 'skip'
       uses: actions/github-script@v7
       env:
+        # Only comments this identity wrote count as the action's own (markers).
+        BOT_LOGIN: ${{ steps.pr.outputs.bot_login }}
         BRAND: ${{ inputs.brand }}
         PR_NUMBER: ${{ steps.pr.outputs.number }}
         SIZE_KB: ${{ steps.guard.outputs.size_kb }}
@@ -825,6 +848,11 @@ runs:
           // the OrcaRouter key and the GitHub token from what it sends.
           const guard = await import(require('url').pathToFileURL(process.env.PUBLISH_GUARD).href);
           const gh = guard.guardGithub(github);
+          // A marker counts only in a comment the action's own identity wrote.
+          // With no resolved identity nothing matches: post anew, edit nothing.
+          const mine = (c) =>
+            Boolean(process.env.BOT_LOGIN) && Boolean(c && c.body) &&
+            Boolean(c.user) && c.user.login === process.env.BOT_LOGIN;
           const brand = process.env.BRAND;
           const num = Number(process.env.PR_NUMBER);
           const repo = { owner: context.repo.owner, repo: context.repo.repo };
@@ -857,7 +885,7 @@ runs:
           const comments = await github.paginate(github.rest.issues.listComments, {
             ...repo, issue_number: num, per_page: 100,
           });
-          const existing = comments.find((c) => c.body && c.body.includes(MARKER));
+          const existing = comments.find((c) => mine(c) && c.body.includes(MARKER));
           if (existing) {
             await gh.rest.issues.updateComment({ ...repo, comment_id: existing.id, body });
           } else {
@@ -1415,6 +1443,8 @@ runs:
       if: always() && steps.settings.outputs.decision == 'review' && steps.guard.outputs.decision == 'review'
       uses: actions/github-script@v7
       env:
+        # Only comments this identity wrote count as the action's own (markers).
+        BOT_LOGIN: ${{ steps.pr.outputs.bot_login }}
         BRAND: ${{ inputs.brand }}
         PR_NUMBER: ${{ steps.pr.outputs.number }}
         POLICY_BLOCK: ${{ runner.temp }}/policy-block.json
@@ -1433,6 +1463,11 @@ runs:
           // the OrcaRouter key and the GitHub token from what it sends.
           const guard = await import(require('url').pathToFileURL(process.env.PUBLISH_GUARD).href);
           const gh = guard.guardGithub(github);
+          // A marker counts only in a comment the action's own identity wrote.
+          // With no resolved identity nothing matches: post anew, edit nothing.
+          const mine = (c) =>
+            Boolean(process.env.BOT_LOGIN) && Boolean(c && c.body) &&
+            Boolean(c.user) && c.user.login === process.env.BOT_LOGIN;
           const fs = require('fs');
           let block;
           try {
@@ -1491,7 +1526,7 @@ runs:
           const existingComments = await github.paginate(github.rest.issues.listComments, {
             ...repo, issue_number: num, per_page: 100,
           });
-          const existing = existingComments.find((c) => c.body && c.body.includes(MARKER));
+          const existing = existingComments.find((c) => mine(c) && c.body.includes(MARKER));
           if (!existing) {
             await gh.rest.issues.createComment({ ...repo, issue_number: num, body });
           } else if (existing.body !== body) {
@@ -1811,6 +1846,8 @@ runs:
       if: steps.settings.outputs.decision == 'review' && steps.guard.outputs.decision == 'review'
       uses: actions/github-script@v7
       env:
+        # Only comments this identity wrote count as the action's own (markers).
+        BOT_LOGIN: ${{ steps.pr.outputs.bot_login }}
         PR_NUMBER: ${{ steps.pr.outputs.number }}
         # THE FILTERED COPY, the same one the inline comments come from.
         #
@@ -1847,6 +1884,11 @@ runs:
           // the OrcaRouter key and the GitHub token from what it sends.
           const guard = await import(require('url').pathToFileURL(process.env.PUBLISH_GUARD).href);
           const gh = guard.guardGithub(github);
+          // A marker counts only in a comment the action's own identity wrote.
+          // With no resolved identity nothing matches: post anew, edit nothing.
+          const mine = (c) =>
+            Boolean(process.env.BOT_LOGIN) && Boolean(c && c.body) &&
+            Boolean(c.user) && c.user.login === process.env.BOT_LOGIN;
           const fs = require('fs');
           const { execFileSync } = require('child_process');
           const { pathToFileURL } = require('url');
@@ -1867,7 +1909,7 @@ runs:
             ...repo, issue_number: num, per_page: 100,
           });
           for (const stale of ['<!-- orca-code-review-disabled -->', '<!-- orca-code-review-skip -->', '<!-- orca-code-review-block -->', MARKER]) {
-            const notice = comments.find((c) => c.body && c.body.includes(stale));
+            const notice = comments.find((c) => mine(c) && c.body.includes(stale));
             if (!notice) continue;
             try {
               await github.rest.issues.deleteComment({ ...repo, comment_id: notice.id });

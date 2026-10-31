@@ -1,6 +1,7 @@
 # Action inputs
 
-Every input of `Continuum-AI-Corp/orca-code-review@v1`. Read the row before
+Every input of `Continuum-AI-Corp/orca-code-review` (pinned to a release commit
+in the shipped workflow). Read the row before
 answering a question about behavior — do not guess a default.
 
 **These rows describe this action.** The hosted OrcaCode Review GitHub App runs a
@@ -19,11 +20,11 @@ about the App from this file.
 
 | Input | Default | What it does |
 | --- | --- | --- |
-| `orcarouter-url` | `https://api.orcarouter.ai/v1/chat/completions` | Chat-completions endpoint. Change only for a self-hosted gateway. |
+| `orcarouter-url` | `https://api.orcarouter.ai/v1/chat/completions` | Chat-completions endpoint. Change only for a self-hosted gateway. Must be https. |
 | `github-token` | `${{ github.token }}` | Fetches the PR head, posts review comments, and reacts to a `/orcacode-review` command. |
 | `brand` | `OrcaCode Review` | Name shown on PR comments. |
 | `router` | `orcarouter/orcacode-review` | Router alias that owns model selection. The action names no models: it injects raw facts (`x-cr-prev-tier`, `x-cr-prev-p0p1`) and this router's DSL recipe maps them to a concrete model. |
-| `engine-version` | `1.3.13` | Pinned `@alibaba-group/open-code-review` version. Bump deliberately — later steps parse its JSON output shape. |
+| `engine-version` | `1.3.13` | Pinned `@alibaba-group/open-code-review` version. Only versions whose checksums this action release pins (`scripts/engine-pins.json`) install — any other value fails the run. |
 
 ## Severity and merge gate
 
@@ -39,12 +40,15 @@ empty string is valid and means "none".
 
 | Input | Default | What it does |
 | --- | --- | --- |
-| `auto-review-authors` | `""` (everyone) | Author-association allowlist for **automatic** reviews. Others can still be reviewed on demand via `/orcacode-review`. Values: `OWNER`, `MEMBER`, `COLLABORATOR`, `CONTRIBUTOR`, `FIRST_TIME_CONTRIBUTOR`, `FIRST_TIMER`, `MANNEQUIN`, `NONE`. |
+| `auto-review-authors` | unset: `OWNER,MEMBER,COLLABORATOR` on a public repo, everyone on a private one | Author-association allowlist for **automatic** reviews. `"*"` reviews everyone on any repo. Others can still be reviewed on demand via `/orcacode-review`. Values: `OWNER`, `MEMBER`, `COLLABORATOR`, `CONTRIBUTOR`, `FIRST_TIME_CONTRIBUTOR`, `FIRST_TIMER`, `MANNEQUIN`, `NONE`, `*`. |
+| `on-skipped-review` | `fail` | What a settings skip (auto-review off, on-demand mode, a draft, an author outside the allowlist) does to the check. `fail` keeps an unreviewed PR from passing a required gate; `pass` makes skips advisory. |
+| `status-context` | `OrcaCode Review` | Commit status written on the PR head after every run (on-demand runs included): success only when a review ran on that head and the gate passed. Make it the required check; needs `statuses: write`. `""` turns it off. |
 
 On a **public** repo this is a spend control, not a preference. The workflow runs on
 `pull_request_target`, which bypasses GitHub's fork-approval gate, and the key is
-wallet-metered — so any stranger opening a PR can trigger paid reviews. Set the
-allowlist and put a budget + alert on the key.
+wallet-metered — which is why an unset allowlist means maintainers only there. Put
+a budget + alert on the key either way. The `/orcacode-review` command is honoured
+only from `OWNER`, `MEMBER` or `COLLABORATOR`, by the action itself.
 
 ## Oversized-diff guard
 

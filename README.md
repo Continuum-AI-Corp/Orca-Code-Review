@@ -249,7 +249,7 @@ Comment on any PR:
 /orcacode-review
 ```
 
-to request another review.
+to request another review. Only an **owner, member or collaborator** can: the action ignores the command from anyone else, whatever the workflow says. The verdict lands on the PR's head commit as the `OrcaCode Review` status.
 
 ---
 
@@ -265,9 +265,32 @@ A PR the action did **not** review never passes: a skipped review (on-demand mod
 
 ---
 
+## Upgrading: behaviour changes in this release
+
+Security hardening that changes what you may see. Inputs are unchanged except for two new ones; defaults that close a hole are new.
+
+| What changed | What you will notice | To keep the old behaviour |
+| --- | --- | --- |
+| `auto-review-authors` unset on a **public** repo now means `OWNER,MEMBER,COLLABORATOR` (private repos: everyone, as before) | Fork PRs from outsiders are no longer auto-reviewed on your wallet; a maintainer can `/orcacode-review` them | `auto-review-authors: "*"` |
+| New `on-skipped-review` (default `"fail"`) | A skipped review (on-demand mode, auto-review off, a draft, an author outside the allowlist) **fails** the check instead of passing | `on-skipped-review: "pass"` |
+| New `status-context` (default `"OrcaCode Review"`) | A commit status on the PR head after every run, on-demand runs included. Grant `statuses: write`; require this status instead of the `review` job | `status-context: ""` |
+| Comment commands are checked by the action | `/orcacode-review` from anyone but an owner, member or collaborator, or any other comment, is a no-op | — |
+| Settings outage with `block-on` left at its default | That run blocks on **every** severity (an outage never loosens the gate) | Set `block-on` explicitly |
+| The gate fails closed | A result the gate cannot read now fails the check instead of passing | — |
+| `engine-version` must be pinned | Only versions with checksums in `scripts/engine-pins.json` install; anything else fails the run | — |
+| `orcarouter-url` must be https | A plain-http gateway URL is refused (loopback excepted) | — |
+| What is posted is sanitised | @mentions don't ping, HTML is shown as text, off-site links are shown as code, at most 50 findings are posted per review, guardrail details are hidden on public repos | — |
+| The checkout is hardened | Symlinks are removed, the PR's `.gitattributes` cannot hide the diff, the base `.gitignore` applies; the summary lists changed files the engine skips | — |
+| Severity is never lowered | Duplicates keep the most severe tag; the judge cannot drop a P0 or a security finding | — |
+| Shipped workflows | Per-job concurrency (a comment cannot cancel a review), re-run on `reopened` and on a retargeted base (`edited`), `statuses: write`, the action pinned to a commit SHA | Update your copy from [`workflows/orca-code-review.yml`](workflows/orca-code-review.yml) |
+
+Self-hosted runners need git 2.31 or newer for private-repository fetches (the token travels in `GIT_CONFIG_*` environment variables, not on git's command line).
+
+---
+
 ## Security & Privacy
 
-OrcaCode reads the PR diff and repository files required for review. **It does not execute PR code.**
+OrcaCode reads the PR diff and repository files required for review. **It does not execute PR code, and the review engine never holds your API key** — an in-job proxy adds it on the way to OrcaRouter. Everything posted to the PR is sanitised and has your key and token redacted.
 
 Optional run reporting sends only review metadata — repository, PR, commit SHA, tier, severity counts, gate result, and engine version.
 

@@ -29,6 +29,16 @@
 # pinned at the top, replaced in place on every push; and a best-effort per-tier run report
 # (scripts/report.mjs) posts severity counts — never code — to the OrcaRouter
 # control plane after the gate.
+#
+# Security posture (SECURITY.md has the detail): a comment trigger runs only for
+# a maintainer's review command, checked here and not only in the workflow; the
+# checkout is hardened before anything reads it (scripts/harden-checkout.mjs);
+# the engine is installed from pinned, verified bytes (scripts/install-engine.mjs)
+# and never holds the API key — the proxy injects it; everything posted goes
+# through one sanitising, redacting funnel (scripts/publish-guard.mjs); and the
+# merge gate fails closed — a skip fails per `on-skipped-review`, an undecidable
+# gate fails, a settings outage never loosens block_on — with the verdict also
+# written as a commit status on the PR head (scripts/review-status.mjs).
 
 name: "OrcaCode Review"
 description: "AI code review for every pull request, powered by OrcaRouter"
@@ -47,7 +57,7 @@ inputs:
     required: false
     default: "https://api.orcarouter.ai/v1/chat/completions"
   github-token:
-    description: "Token used to fetch the PR head, post review comments, and react to a /orcacode-review command."
+    description: "Token used to fetch the PR head, post review comments, write the commit status on the PR head, and react to a /orcacode-review command."
     required: false
     default: ${{ github.token }}
   brand:

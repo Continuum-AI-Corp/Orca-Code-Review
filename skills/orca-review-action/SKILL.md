@@ -80,7 +80,8 @@ private repo, and asking it there is noise.
 
 **Q4 — public repos only — "Who gets an automatic review?"** (`auto-review-authors`)
 - *Known contributors only (recommended)* → `"OWNER,MEMBER,COLLABORATOR,CONTRIBUTOR"`.
-- *Everyone* → `""`.
+- *Everyone* → `"*"`. (Leaving the input out means `OWNER,MEMBER,COLLABORATOR` on a
+  public repo, so "everyone" has to be written explicitly.)
 
 Say plainly why Q4 exists: the workflow runs on `pull_request_target` with your
 OrcaRouter secret, so on a public repo a stranger's PR can spend from your wallet.
@@ -160,12 +161,17 @@ gh pr create --fill && gh run watch
 
 A passing check blocks nothing until it is required. Walk the user through
 **Settings → Branches / Rulesets → Require status checks to pass** and adding the
-**`review`** check, or offer to do it:
+**`OrcaCode Review`** status, or offer to do it:
 
 ```bash
 gh api -X PATCH repos/<owner>/<name>/branches/<default>/protection/required_status_checks \
-  -f 'checks[][context]=review'
+  -f 'checks[][context]=OrcaCode Review'
 ```
+
+Require the status, not the `review` job: the action writes it on the PR head after
+every run, and it is the only check an on-demand `/orcacode-review` run can update
+on the PR (GitHub reports that run's own job on the default branch). A skipped or
+oversized review leaves it failing by default, so an unreviewed PR cannot merge.
 
 Confirm before running — branch protection changes affect everyone on the repo.
 
@@ -226,15 +232,18 @@ gh run view <run-id> --log-failed
 `references/troubleshooting.md` maps each symptom to its cause and fix. The four that
 account for most reports:
 
-- **No run at all** — the PR is a draft and `trigger` is `ready_for_review`, the author
-  is outside `auto-review-authors`, or the app is off in the dashboard.
+- **Red check, "review skipped" notice** — the PR is a draft and `trigger` is
+  `ready_for_review`, the author is outside `auto-review-authors` (unset means
+  maintainers only on a public repo), or the app is off in the dashboard. Skips fail by
+  default (`on-skipped-review`); a maintainer's `/orcacode-review` reviews the head.
 - **Run fails immediately, auth error** — `ORCAROUTER_API_KEY` is missing, misnamed, or
   scoped to an environment the job cannot read.
 - **"Diff too large" notice and a red check** — expected behavior with
   `on-oversized-diff: "fail"`. Split the PR, or raise `max-diff-kb` / `max-diff-files`.
-- **Reviews work but the console's Settings/Analytics tabs are empty** — `@v1` points at
-  a commit older than `scripts/settings.mjs` / `scripts/report.mjs`. There is no error
-  for this; verify with `git ls-tree v1 scripts/` against the action repo.
+- **Reviews work but the console's Settings/Analytics tabs are empty** — the pinned
+  action commit (or an old `@v1` tag) predates `scripts/settings.mjs` /
+  `scripts/report.mjs`. There is no error for this; verify with
+  `git ls-tree <sha> scripts/` against the action repo and pin a newer release commit.
 
 Report the actual failing output, not a paraphrase of it.
 
@@ -242,7 +251,8 @@ Report the actual failing output, not a paraphrase of it.
 
 Confirm with the user first, then in this order:
 
-1. **Drop the required check** — remove `review` from branch protection *before* deleting
+1. **Drop the required check** — remove `OrcaCode Review` (and `review`, on older
+   installs) from branch protection *before* deleting
    the workflow. A required check whose workflow no longer exists never reports, and every
    PR blocks forever with no way to clear it.
 2. **Delete the workflow** — `rm .github/workflows/orca-code-review.yml`, commit, push.

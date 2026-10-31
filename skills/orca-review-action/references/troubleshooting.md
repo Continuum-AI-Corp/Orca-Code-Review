@@ -57,21 +57,24 @@ Working as configured. The guard runs before the engine, so nothing was spent.
 | Nothing was found | A clean run posts a summary, not inline comments. Check the job log's severity counts. |
 | Quiet mode | P2 findings are muted at posting time. The gate and report still counted them — the log will show a nonzero P2. |
 | Precision filter dropped them | L1 drops findings whose `existing_code` snippet does not match the reviewed commit; L2 drops low-confidence clusters. Lower `judge-threshold`, or set `precision-filter: "false"` to see raw output. |
-| Missing permissions | The job needs `pull-requests: write` and `issues: write`. |
+| Missing permissions | The job needs `pull-requests: write` and `issues: write`, plus `statuses: write` for the `OrcaCode Review` status. |
 
 ## Reviews work, but the console's Settings and Analytics tabs are empty
 
-`@v1` points at a commit that predates `scripts/settings.mjs` and
-`scripts/report.mjs`. Settings are never fetched and runs are never reported —
-**with no error message**. Two dead tabs and working reviews is the signature.
+The workflow pins an action commit (or, in an old workflow, the `@v1` tag) that
+predates `scripts/settings.mjs` and `scripts/report.mjs`. Settings are never
+fetched and runs are never reported — **with no error message**. Two dead tabs and
+working reviews is the signature.
 
-Verify against the action repo:
+Verify against the action repo, with the SHA from the workflow's `uses:` line:
 
 ```bash
-git ls-tree v1 scripts/ | grep -E 'settings|report'
+git ls-tree <sha> scripts/ | grep -E 'settings|report'
 ```
 
-Fix by pinning a newer tag or an immutable commit SHA instead of `@v1`.
+Fix by pinning a newer release commit (the version is in the `# v1.x.y` comment;
+Dependabot's github-actions updates do this for you). Do not switch to `@v1`: a
+tag can be moved, a commit cannot.
 
 ## Findings look wrong or noisy
 
@@ -113,3 +116,20 @@ fails closed with a distinct "wall-clock timeout" error, separate from
 "no usable result" — the log says which. Raise it for very large diffs or
 slow-per-call models, or lower `concurrency` if the model is rate-limiting and the
 retries are what is eating the clock.
+
+## The check is red but nothing was reviewed
+
+Expected when a review is skipped: on-demand mode, auto-review off in the
+dashboard, a draft under `ready_for_review`, an author outside
+`auto-review-authors` (on a public repo an unset allowlist means
+`OWNER,MEMBER,COLLABORATOR`), or an oversized diff. An unreviewed PR fails by
+default so it cannot pass a required gate. A maintainer's `/orcacode-review`
+reviews the head and its verdict replaces the `OrcaCode Review` status — which is
+why that status, not the `review` job, should be the required check. To make skips
+advisory instead: `on-skipped-review: "pass"` / `on-oversized-diff: "pass"`.
+
+## `/orcacode-review` did nothing
+
+The action honours the command only on a pull request, only as the start of the
+comment, and only from `OWNER`, `MEMBER` or `COLLABORATOR`. Anyone else's command
+is a logged no-op.

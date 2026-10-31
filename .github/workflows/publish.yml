@@ -159,6 +159,18 @@ jobs:
             console.log("tarball ok — " + files.length + " files");
           '
 
+      # WHAT THE TARBALL SAYS ABOUT THE ACTION MUST BE TRUE OF THE PINNED RELEASE.
+      # The installer and the skill hand out ACTION_SHA; a README or skill page
+      # that names a newer action version (other than as the "from v1.x.y
+      # (unreleased)" marker the test suite holds unreleased behaviour to) would
+      # tell every npm user about behaviour their workflow does not have.
+      - name: Verify the published docs name no action version newer than the pin
+        if: steps.check.outputs.needed == 'true'
+        run: |
+          set -euo pipefail
+          npm pack --dry-run --json > "$RUNNER_TEMP/pack-docs.json"
+          node scripts/doc-pins.mjs --pack "$RUNNER_TEMP/pack-docs.json"
+
       # Install the real tarball and run it through npm's real `.bin` shim.
       #
       # This exists because 1.0.0 shipped a CLI that did nothing. npm installs a

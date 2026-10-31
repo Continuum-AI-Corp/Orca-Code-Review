@@ -80,8 +80,12 @@ private repo, and asking it there is noise.
 
 **Q4 — public repos only — "Who gets an automatic review?"** (`auto-review-authors`)
 - *Known contributors only (recommended)* → `"OWNER,MEMBER,COLLABORATOR,CONTRIBUTOR"`.
-- *Everyone* → `"*"`. (Leaving the input out means `OWNER,MEMBER,COLLABORATOR` on a
-  public repo, so "everyone" has to be written explicitly.)
+- *Everyone* → `"OWNER,MEMBER,COLLABORATOR,CONTRIBUTOR,FIRST_TIME_CONTRIBUTOR,FIRST_TIMER,MANNEQUIN,NONE"`.
+
+Write the list out either way, never leave it unset and never write `"*"`: the
+release the shipped workflow pins (v1.6.0) reads unset as everyone and `"*"` as
+nobody, while from v1.7.0 (unreleased) unset means `OWNER,MEMBER,COLLABORATOR` on
+a public repo. An explicit list means the same to both.
 
 Say plainly why Q4 exists: the workflow runs on `pull_request_target` with your
 OrcaRouter secret, so on a public repo a stranger's PR can spend from your wallet.
@@ -161,17 +165,22 @@ gh pr create --fill && gh run watch
 
 A passing check blocks nothing until it is required. Walk the user through
 **Settings → Branches / Rulesets → Require status checks to pass** and adding the
-**`OrcaCode Review`** status, or offer to do it:
+**`review`** check (the workflow's job), or offer to do it:
 
 ```bash
 gh api -X PATCH repos/<owner>/<name>/branches/<default>/protection/required_status_checks \
-  -f 'checks[][context]=OrcaCode Review'
+  -f 'checks[][context]=review'
 ```
 
-Require the status, not the `review` job: the action writes it on the PR head after
-every run, and it is the only check an on-demand `/orcacode-review` run can update
-on the PR (GitHub reports that run's own job on the default branch). A skipped or
-oversized review leaves it failing by default, so an unreviewed PR cannot merge.
+Require exactly that while the workflow pins v1.6.0: it writes no other check, and
+a required check that never reports blocks every PR for ever.
+
+From v1.7.0 (unreleased) the action also writes an **`OrcaCode Review`** commit
+status on the PR head after every run. Once the workflow pins the release that writes it,
+require that status instead of the `review` job: it is the only check an on-demand
+`/orcacode-review` run can update on the PR (GitHub reports that run's own job on
+the default branch), and a skipped review leaves it "Not reviewed", so an
+unreviewed PR cannot merge.
 
 Confirm before running — branch protection changes affect everyone on the repo.
 
@@ -252,9 +261,9 @@ Report the actual failing output, not a paraphrase of it.
 
 Confirm with the user first, then in this order:
 
-1. **Drop the required check** — remove `OrcaCode Review` (and `review`, on older
-   installs) from branch protection *before* deleting
-   the workflow. A required check whose workflow no longer exists never reports, and every
+1. **Drop the required check** — remove `review` (and the `OrcaCode Review` status,
+   if it was required — from v1.7.0 (unreleased)) from branch protection *before*
+   deleting the workflow. A required check whose workflow no longer exists never reports, and every
    PR blocks forever with no way to clear it.
 2. **Delete the workflow** — `rm .github/workflows/orca-code-review.yml`, commit, push.
 3. **Leave the secret** — say that `ORCAROUTER_API_KEY` is harmless to keep and is worth

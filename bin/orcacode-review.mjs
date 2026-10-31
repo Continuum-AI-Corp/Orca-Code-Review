@@ -350,10 +350,16 @@ const INPUT_NOTES = {
   "auto-review-authors": "author allowlist for AUTOMATIC reviews",
 };
 
-// The answers to "who gets an automatic review?" on a public repository. The
-// action reads an UNSET auto-review-authors there as OWNER,MEMBER,COLLABORATOR,
-// so "Everyone" has to be written as the explicit opt-out "*" — written as ""
-// it would equal the default, be omitted, and mean maintainers only.
+// The answers to "who gets an automatic review?" on a public repository, as
+// values EVERY release reads the same way. Both are written out in full:
+//   - left unset, the pinned release (ACTION_VERSION) reviews everyone, while
+//     the next one reviews only OWNER,MEMBER,COLLABORATOR on a public repo —
+//     so "" would change meaning on the upgrade;
+//   - "*" is everyone to the next release and, to the pinned one, a list
+//     holding only "*" — no automatic review at all.
+// The explicit list of every association is everyone to both.
+// scripts/pinned-release.test.mjs runs each value through both releases' gates.
+export const EVERY_ASSOCIATION = "OWNER,MEMBER,COLLABORATOR,CONTRIBUTOR,FIRST_TIME_CONTRIBUTOR,FIRST_TIMER,MANNEQUIN,NONE";
 export function authorChoices(t) {
   return [
     {
@@ -362,7 +368,7 @@ export function authorChoices(t) {
       recommended: true,
       detail: t("config.authorsKnownDetail"),
     },
-    { label: t("config.authorsAll"), value: "*", detail: t("config.authorsAllDetail") },
+    { label: t("config.authorsAll"), value: EVERY_ASSOCIATION, detail: t("config.authorsAllDetail") },
   ];
 }
 
@@ -400,7 +406,7 @@ permissions:
   contents: read
   pull-requests: write
   issues: write # clean/fallback PR comments
-  statuses: write # the verdict on the PR head — the check to make required
+  statuses: write # used from v1.7.0 (unreleased): the verdict on the PR head
 
 jobs:
   review:

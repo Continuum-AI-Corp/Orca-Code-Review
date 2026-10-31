@@ -22,7 +22,7 @@ permissions:
   contents: read
   pull-requests: write
   issues: write # clean/fallback PR comments
-  statuses: write # the verdict on the PR head — the check to make required
+  statuses: write # used from v1.7.0 (unreleased): the verdict on the PR head
 
 jobs:
   review:

@@ -155,7 +155,7 @@ permissions:
   contents: read
   pull-requests: write
   issues: write
-  statuses: write # the verdict on the PR head — the check to make required
+  statuses: write # used from v1.7.0 (unreleased): the verdict on the PR head
 
 jobs:
   review:
@@ -249,7 +249,9 @@ Comment on any PR:
 /orcacode-review
 ```
 
-to request another review. Only an **owner, member or collaborator** can: the action ignores the command from anyone else, whatever the workflow says. The verdict lands on the PR's head commit as the `OrcaCode Review` status.
+to request another review. Only an **owner, member or collaborator** can: the workflow's `if:` ignores the command from anyone else.
+
+From v1.7.0 (unreleased) the action itself ignores an outsider's command too, whatever the workflow says, and the verdict lands on the PR's head commit as the `OrcaCode Review` status.
 
 ---
 
@@ -261,17 +263,17 @@ To make P0/P1 findings actually prevent merging:
 
 Add the **`review`** check (the workflow's job) as required. An oversized diff fails it by default (`on-oversized-diff: "pass"` makes that advisory); a skipped review — on-demand mode, auto-review off, a draft, an author outside `auto-review-authors` — passes it with a notice on the PR.
 
-From v1.7.0 (unreleased), the action also writes an **`OrcaCode Review`** commit status on the PR's head commit at the end of every run (grant `statuses: write`). It is green only when a review actually ran on that commit and the gate passed; a skipped review reads **"Not reviewed: …"**. Require that status instead of the `review` job once you pin v1.7.0 or later: it is the only check an on-demand `/orcacode-review` run can update on the PR (GitHub reports that run's own job check on the default branch), and it keeps an unreviewed PR from merging while the job stays green. `on-skipped-review: "fail"` fails the job on a skip too.
+From v1.7.0 (unreleased), the action also writes an **`OrcaCode Review`** commit status on the PR's head commit at the end of every run (grant `statuses: write`). It is green only when a review actually ran on that commit and the gate passed; a skipped review reads **"Not reviewed: …"**. Require that status instead of the `review` job once your workflow pins the release that writes it: it is the only check an on-demand `/orcacode-review` run can update on the PR (GitHub reports that run's own job check on the default branch), and it keeps an unreviewed PR from merging while the job stays green. `on-skipped-review: "fail"` fails the job on a skip too.
 
 ---
 
-## Upgrading: behaviour changes in this release
+## Upgrading: what changes from v1.7.0 (unreleased)
 
-Security hardening that changes what you may see. Inputs are unchanged except for two new ones; defaults that close a hole are new.
+Security hardening that changes what you may see. The installer, the example workflow and the quickstart above still pin **v1.6.0**, so none of this applies until you pin the release that ships it. Inputs are unchanged except for two new ones; defaults that close a hole are new.
 
 | What changed | What you will notice | To keep the old behaviour |
 | --- | --- | --- |
-| `auto-review-authors` unset on a **public** repo now means `OWNER,MEMBER,COLLABORATOR` (private repos: everyone, as before) | Fork PRs from outsiders are no longer auto-reviewed on your wallet; a maintainer can `/orcacode-review` them | `auto-review-authors: "*"` |
+| `auto-review-authors` unset on a **public** repo now means `OWNER,MEMBER,COLLABORATOR` (private repos: everyone, as before) | Fork PRs from outsiders are no longer auto-reviewed on your wallet; a maintainer can `/orcacode-review` them | `auto-review-authors: "OWNER,MEMBER,COLLABORATOR,CONTRIBUTOR,FIRST_TIME_CONTRIBUTOR,FIRST_TIMER,MANNEQUIN,NONE"` (`"*"` works too from v1.7.0 (unreleased), but v1.6.0 reads it as nobody) |
 | New `status-context` (default `"OrcaCode Review"`) | A commit status on the PR head after every run, on-demand runs included: green only for a reviewed head whose gate passed; a skipped review is **"Not reviewed"**. Grant `statuses: write`; require this status instead of the `review` job | `status-context: ""` |
 | New `on-skipped-review` (default `"pass"`) | Nothing, by default: a skipped review still passes the job. `"fail"` fails the job on a skip too | — |
 | Comment commands are checked by the action | `/orcacode-review` from anyone but an owner, member or collaborator, or any other comment, is a no-op | — |
@@ -290,7 +292,7 @@ Self-hosted runners need git 2.31 or newer for private-repository fetches (the t
 
 ## Security & Privacy
 
-OrcaCode reads the PR diff and repository files required for review. **It does not execute PR code, and the review engine never holds your API key** — an in-job proxy adds it on the way to OrcaRouter. Everything posted to the PR is sanitised and has your key and token redacted.
+OrcaCode reads the PR diff and repository files required for review. **It does not execute PR code.** From v1.7.0 (unreleased), **the review engine never holds your API key** — an in-job proxy adds it on the way to OrcaRouter — and everything posted to the PR is sanitised and has your key and token redacted.
 
 Optional run reporting sends only review metadata — repository, PR, commit SHA, tier, severity counts, gate result, and engine version.
 

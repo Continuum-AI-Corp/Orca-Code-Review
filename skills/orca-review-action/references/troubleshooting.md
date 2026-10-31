@@ -57,7 +57,7 @@ Working as configured. The guard runs before the engine, so nothing was spent.
 | Nothing was found | A clean run posts a summary, not inline comments. Check the job log's severity counts. |
 | Quiet mode | P2 findings are muted at posting time. The gate and report still counted them — the log will show a nonzero P2. |
 | Precision filter dropped them | L1 drops findings whose `existing_code` snippet does not match the reviewed commit; L2 drops low-confidence clusters. Lower `judge-threshold`, or set `precision-filter: "false"` to see raw output. |
-| Missing permissions | The job needs `pull-requests: write` and `issues: write`, plus `statuses: write` for the `OrcaCode Review` status. |
+| Missing permissions | The job needs `pull-requests: write` and `issues: write` — and, from v1.7.0 (unreleased), `statuses: write` for the `OrcaCode Review` status. |
 
 ## Reviews work, but the console's Settings and Analytics tabs are empty
 
@@ -132,6 +132,7 @@ green job is that.
 
 ## `/orcacode-review` did nothing
 
-The action honours the command only on a pull request, only as the start of the
-comment, and only from `OWNER`, `MEMBER` or `COLLABORATOR`. Anyone else's command
-is a logged no-op.
+From v1.7.0 (unreleased) the action itself honours the command only on a pull
+request, only as the start of the comment, and only from `OWNER`, `MEMBER` or
+`COLLABORATOR`, whatever the workflow's `if:` says. Anyone else's command is a
+logged no-op.

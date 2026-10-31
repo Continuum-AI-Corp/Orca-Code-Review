@@ -7,9 +7,13 @@
 # github-actions updates bump it.
 #
 # One review per push: findings post as inline PR comments, and a severity gate
-# can fail the check to block the merge. Make the "OrcaCode Review" commit
-# status required in branch protection — it is the one verdict an on-demand
-# /orcacode-review run can also update on the PR head.
+# can fail the check to block the merge. Make the `review` check required in
+# branch protection.
+#
+# From v1.7.0 (unreleased) the action also writes an "OrcaCode Review" commit
+# status on the PR head; once you pin the release that writes it, require that status
+# instead — it is the one verdict an on-demand /orcacode-review run can also
+# update on the PR head.
 
 name: OrcaCode Review
 
@@ -27,7 +31,7 @@ permissions:
   contents: read
   pull-requests: write
   issues: write # clean/fallback PR comments
-  statuses: write # the verdict on the PR head — the check to make required
+  statuses: write # used from v1.7.0 (unreleased): the verdict on the PR head
 
 jobs:
   review:

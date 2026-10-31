@@ -1,32 +1,43 @@
 # Releasing
 
-## Release tags are never moved
+## Release tags
 
 Whatever commit a tag points at runs, with the customer's OrcaRouter key, in
-every repository that references the tag. A tag that can be re-pointed — with
-`git tag -f` and a force push — is therefore a way to run new code in every
-customer's CI without a single customer-side change. So:
+every repository that references the tag. A tag that can be re-pointed is a way
+to run new code in every customer's CI without a single customer-side change.
+So:
 
-- **A release is a new tag on a merged commit of `main`: `v1.<minor>.<patch>`.**
-  It is created once and never moved, re-created or deleted. A bad release is
-  fixed by the next one, never by re-pointing the old tag.
-- **What we hand out pins the commit, not a tag.** The installer
-  (`ACTION_SHA` / `ACTION_VERSION` in `bin/orcacode-review.mjs`), the example
-  workflow (`workflows/orca-code-review.yml`), the skill's asset
-  (`skills/orca-review-action/assets/workflow.yml`) and the README quickstart
-  all read `uses: Continuum-AI-Corp/orca-code-review@<full sha> # v1.<n>.<p>`.
-  `scripts/release-pin.test.mjs` holds all four to the installer's constants,
-  so a release that bumps one bumps all of them. Customers' Dependabot
-  (`package-ecosystem: github-actions`) reads the `# v1.x.y` comment and offers
-  each new release as a pull request that changes the SHA and the comment
-  together.
-- **The `v1` major tag is legacy.** Workflows written before commit pinning
-  reference `@v1`, and only for them is it still advanced: only ever to a
-  descendant of its current commit that already carries an immutable
-  `v1.<n>.<p>` release tag, by an administrator through the ruleset bypass
-  below. It is the one tag update left that needs force, and it exists only so
-  those workflows still receive fixes. Nothing this repository generates or
-  documents references `@v1` any more; tell anyone still on it to pin a SHA.
+- **`v1.<minor>.<patch>` tags are immutable.** A release is a new tag on a merged
+  commit of `main`, created once and never moved, re-created or deleted. A bad
+  release is fixed by the next one, never by re-pointing the old tag.
+- **The floating `v1` major MAY be advanced — only by the release step below.**
+  It moves forward to the commit of the release just tagged, by an administrator
+  through the ruleset's administrator-only bypass, as a fast-forward-only ref
+  update: GitHub refuses a `force=false` update unless the new commit descends
+  from the old one, so `v1` can never be pointed sideways or back. Nothing else
+  ever moves it.
+- **Customers should pin a full commit SHA with the version in a comment**
+  (`uses: Continuum-AI-Corp/orca-code-review@<full sha> # v1.x.y`), not `@v1`.
+  That is what we hand out: the installer (`ACTION_SHA` / `ACTION_VERSION` in
+  `bin/orcacode-review.mjs`), the example workflow
+  (`workflows/orca-code-review.yml`), the skill's asset
+  (`skills/orca-review-action/assets/workflow.yml`) and the README quickstart.
+  `scripts/release-pin.test.mjs` fails if any of the four diverges from the
+  installer's constants. Customers' Dependabot (`package-ecosystem:
+  github-actions`) reads the `# v1.x.y` comment and offers each release as a pull
+  request that changes the SHA and the comment together.
+
+### Docs say what the pinned release does
+
+`main` runs ahead of the pin, so its docs can describe behaviour no customer has
+yet. Every doc line about such behaviour carries `from v1.<next> (unreleased)`
+(`MARKER` in `scripts/doc-pins.mjs`), and `scripts/pinned-release.test.mjs` holds
+README, SECURITY.md, the skill and the shipped workflows to that: its terms are
+every input `action.yml` has that the pinned release does not, plus the listed
+behaviours. A value the installer or the skill writes into a workflow must mean
+the same to the pinned release as to `main` (the test runs it through both
+releases' gates). The publish workflow refuses a tarball whose docs name an
+action version newer than the pin anywhere but in that marker.
 
 ### Cutting a release
 
@@ -40,15 +51,26 @@ customer's CI without a single customer-side change. So:
    ```
    Publish a GitHub Release for it; with immutable releases enabled (below) the
    tag and its assets are locked from then on.
-3. In a follow-up PR, bump `ACTION_SHA` and `ACTION_VERSION` in
-   `bin/orcacode-review.mjs` to that commit and tag, and the same `uses:` line in
-   `workflows/orca-code-review.yml`, `skills/orca-review-action/assets/workflow.yml`
-   and the README quickstart. The test suite fails until all four agree. Bump
-   `package.json` in the same PR when the installer should ship it (see
+3. Advance the floating major to the same commit — an administrator, through the
+   ruleset bypass, fast-forward only:
+   ```
+   gh api -X PATCH repos/Continuum-AI-Corp/orca-code-review/git/refs/tags/v1 -f sha=<merged-sha> -F force=false
+   ```
+   A refusal ("Update is not a fast forward") means `<merged-sha>` does not
+   descend from the current `v1`: stop and find out why; never force it.
+4. In a follow-up PR, bump the pin and the docs together:
+   - `ACTION_SHA` / `ACTION_VERSION` in `bin/orcacode-review.mjs`, and the same
+     `uses:` line in `workflows/orca-code-review.yml`,
+     `skills/orca-review-action/assets/workflow.yml` and the README quickstart
+     (the suite fails until all four agree);
+   - `PINNED` in `scripts/pinned-release.test.mjs` to the new release (its
+     inputs and allowlist gate; the suite fails until it matches);
+   - every `from v1.<n> (unreleased)` marker the release made true: drop the
+     marker and the "v1.6.0 does otherwise" text beside it, then set
+     `UNRELEASED` in `scripts/doc-pins.mjs` to the next version (the suite
+     refuses a marker for a version the pin has reached).
+   Bump `package.json` in the same PR when the installer should ship it (see
    Installers below).
-4. Only if legacy `@v1` users should get this release: an administrator advances
-   `v1` to the same commit (a descendant of its current one, through the ruleset
-   bypass).
 5. Verify: `git ls-tree <sha> scripts/` lists `settings.mjs` and `report.mjs`, and
    `git show <sha>:action.yml` contains the "Fetch review settings" and
    "Report run" steps.
@@ -60,8 +82,7 @@ administrator does, the rules above are a convention only:
 
 - **Tag ruleset** (Settings → Rules → Rulesets → New tag ruleset), targeting
   `v*`: restrict updates, restrict deletions, block force pushes; no bypass for
-  `v*.*.*`, and an administrator-only bypass on `v1` for the legacy fast-forward
-  in step 4.
+  `v*.*.*`, and an administrator-only bypass on `v1` for step 3.
 - **Immutable releases** (Settings → General → Releases → "Enable release
   immutability"), so a published release's tag and assets cannot be changed.
 - **Dependabot** for this repository's own pinned actions is configured in

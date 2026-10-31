@@ -67,7 +67,7 @@ test("importing the CLI runs nothing", () => {
   assert.equal(r.status, 0, r.stderr);
   // ACTION_SHA / ACTION_VERSION joined the exports: the release the generated
   // workflow pins is read by release-pin.test.mjs and by publish.yml's gate.
-  assert.equal(r.stdout.trim(), "ACTION_SHA,ACTION_VERSION,DEFAULTS,authorChoices,parseOverrides,readOverrides,renderWorkflow");
+  assert.equal(r.stdout.trim(), "ACTION_SHA,ACTION_VERSION,DEFAULTS,EVERY_ASSOCIATION,authorChoices,parseOverrides,readOverrides,renderWorkflow");
 });
 
 test("the published version matches package.json", () => {
@@ -463,17 +463,19 @@ test("an unknown --mode is refused by name, with the choices", (t) => {
 
 // ------------------------------------------------- public-repo author default ---
 
-// The action now reads an UNSET auto-review-authors as OWNER,MEMBER,COLLABORATOR
-// on a public repository, so the installer's "Everyone" answer can no longer be
-// written as the default (an omitted input): it must write the explicit opt-out.
-test('the public-repo "Everyone" answer writes the explicit "*" opt-out, not the default', async () => {
-  const { authorChoices } = await import(CLI);
+// "Everyone" must mean everyone to the release the generated workflow PINS as
+// well as to the next one: unset means everyone to v1.6.0 but maintainers-only
+// on a public repo to the next release, and "*" means everyone to the next
+// release but nobody to v1.6.0. So it is written as the full association list
+// (scripts/pinned-release.test.mjs runs every answer through both gates).
+test('the public-repo "Everyone" answer writes every association, not "*" and not the default', async () => {
+  const { authorChoices, EVERY_ASSOCIATION } = await import(CLI);
   const choices = authorChoices((k) => k);
   const everyone = choices.find((c) => c.label === "config.authorsAll");
-  assert.equal(everyone.value, "*");
+  assert.equal(everyone.value, EVERY_ASSOCIATION);
   const yaml = renderWorkflow({ ...DEFAULTS, "auto-review-authors": everyone.value });
-  assert.match(yaml, /^\s+auto-review-authors: "\*"/m);
-  assert.equal(parseOverrides(yaml)["auto-review-authors"], "*");
+  assert.match(yaml, new RegExp(`^\\s+auto-review-authors: "${EVERY_ASSOCIATION}"`, "m"));
+  assert.equal(parseOverrides(yaml)["auto-review-authors"], EVERY_ASSOCIATION);
   const known = choices.find((c) => c.recommended);
   assert.notEqual(known.value, "", "the recommended answer must be written, not left to a default");
 });

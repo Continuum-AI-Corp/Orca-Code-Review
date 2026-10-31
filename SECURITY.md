@@ -1,6 +1,12 @@
 # Security
 
-## Threat model
+This page describes the action from v1.7.0 (unreleased). The release the
+installer, the example workflow and the README quickstart pin — v1.6.0 — predates
+the hardening below: its engine holds the API key, it posts what the engine wrote
+without sanitising it, and it trusts the workflow's `if:` to keep outsiders'
+review commands out. The README's "Upgrading" table lists every difference.
+
+## Threat model, from v1.7.0 (unreleased)
 
 This action reviews pull requests with an LLM. Two invariants carry its
 security posture:

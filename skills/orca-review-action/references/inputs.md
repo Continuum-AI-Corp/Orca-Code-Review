@@ -20,11 +20,11 @@ about the App from this file.
 
 | Input | Default | What it does |
 | --- | --- | --- |
-| `orcarouter-url` | `https://api.orcarouter.ai/v1/chat/completions` | Chat-completions endpoint. Change only for a self-hosted gateway. Must be https. |
+| `orcarouter-url` | `https://api.orcarouter.ai/v1/chat/completions` | Chat-completions endpoint. Change only for a self-hosted gateway. From v1.7.0 (unreleased) it must be https (plain http is accepted only to this machine's loopback). |
 | `github-token` | `${{ github.token }}` | Fetches the PR head, posts review comments, and reacts to a `/orcacode-review` command. |
 | `brand` | `OrcaCode Review` | Name shown on PR comments. |
 | `router` | `orcarouter/orcacode-review` | Router alias that owns model selection. The action names no models: it injects raw facts (`x-cr-prev-tier`, `x-cr-prev-p0p1`) and this router's DSL recipe maps them to a concrete model. |
-| `engine-version` | `1.3.13` | Pinned `@alibaba-group/open-code-review` version. Only versions whose checksums this action release pins (`scripts/engine-pins.json`) install — any other value fails the run. |
+| `engine-version` | `1.3.13` | Pinned `@alibaba-group/open-code-review` version. From v1.7.0 (unreleased), only versions whose checksums the action pins (`scripts/engine-pins.json`) install — any other value fails the run. |
 
 ## Severity and merge gate
 
@@ -40,15 +40,17 @@ empty string is valid and means "none".
 
 | Input | Default | What it does |
 | --- | --- | --- |
-| `auto-review-authors` | unset: `OWNER,MEMBER,COLLABORATOR` on a public repo, everyone on a private one | Author-association allowlist for **automatic** reviews. `"*"` reviews everyone on any repo. Others can still be reviewed on demand via `/orcacode-review`. Values: `OWNER`, `MEMBER`, `COLLABORATOR`, `CONTRIBUTOR`, `FIRST_TIME_CONTRIBUTOR`, `FIRST_TIMER`, `MANNEQUIN`, `NONE`, `*`. |
+| `auto-review-authors` | unset: everyone (v1.6.0) | Author-association allowlist for **automatic** reviews. Others can still be reviewed on demand via `/orcacode-review`. Values: `OWNER`, `MEMBER`, `COLLABORATOR`, `CONTRIBUTOR`, `FIRST_TIME_CONTRIBUTOR`, `FIRST_TIMER`, `MANNEQUIN`, `NONE`. Write the list out: it means the same to every release. |
+| | | From v1.7.0 (unreleased): unset means `OWNER,MEMBER,COLLABORATOR` on a public repo (everyone on a private one), and `"*"` means everyone — v1.6.0 reads `"*"` as nobody. |
 | `on-skipped-review` | `pass` | From v1.7.0 (unreleased). What a settings skip (auto-review off, on-demand mode, a draft, an author outside the allowlist) does to the **job**: `pass` keeps it green, as every release did; `fail` fails it. The `status-context` status reports a skip as "Not reviewed" either way. |
 | `status-context` | `OrcaCode Review` | From v1.7.0 (unreleased). Commit status written on the PR head after every run (on-demand runs included): success only when a review ran on that head and the gate passed; a settings skip is "Not reviewed". Make it the required check; needs `statuses: write`. `""` turns it off. |
 
 On a **public** repo this is a spend control, not a preference. The workflow runs on
 `pull_request_target`, which bypasses GitHub's fork-approval gate, and the key is
-wallet-metered — which is why an unset allowlist means maintainers only there. Put
-a budget + alert on the key either way. The `/orcacode-review` command is honoured
-only from `OWNER`, `MEMBER` or `COLLABORATOR`, by the action itself.
+wallet-metered. Put a budget + alert on the key either way. The shipped workflow's
+`if:` honours the `/orcacode-review` command only from `OWNER`, `MEMBER` or
+`COLLABORATOR`; from v1.7.0 (unreleased) the action itself refuses anyone else's
+command too, and an unset allowlist means maintainers only on a public repo.
 
 ## Oversized-diff guard
 

@@ -84,12 +84,31 @@ describe("release hygiene", () => {
     assert.equal(gha.directory, "/");
   });
 
+  const releaseCode = () =>
+    [...readText("RELEASE.md").matchAll(/```[\w-]*\n([\s\S]*?)```/g)].map((m) => m[1]).join("\n");
+
   test("RELEASE.md never moves or force-pushes a version tag", () => {
     const md = readText("RELEASE.md");
-    const code = [...md.matchAll(/```[\w-]*\n([\s\S]*?)```/g)].map((m) => m[1]).join("\n");
+    const code = releaseCode();
     assert.doesNotMatch(code, /git tag (-f|--force)/, "a release step re-points a tag");
-    assert.doesNotMatch(code, /git push[^\n]*(--force|-f\b)/, "a release step force-pushes");
+    assert.doesNotMatch(code, /git push[^\n]*(--force|-f\b|\+refs)/, "a release step force-pushes");
+    assert.doesNotMatch(code, /force=true/, "a release step force-updates a ref");
     assert.match(md, /immutable/i, "the immutable-release setting is documented");
     assert.match(md, /ruleset/i, "the tag ruleset is documented");
+  });
+
+  test("the floating v1 is advanced only by the release step: a fast-forward-only update, by an administrator", () => {
+    const md = readText("RELEASE.md");
+    const code = releaseCode();
+    const advance = code.split("\n").filter((l) => /refs\/tags\/v1\b(?!\.)/.test(l));
+    assert.equal(advance.length, 1, `exactly one documented way to move v1, got:\n${advance.join("\n")}`);
+    assert.match(advance[0], /gh api -X PATCH [^\n]*\/git\/refs\/tags\/v1 /);
+    assert.match(advance[0], /-F force=false\b/, "GitHub refuses a non-fast-forward when force=false");
+    assert.match(md, /administrator-only bypass[^\n]*`v1`|`v1`[^\n]*administrator-only bypass/i);
+    assert.doesNotMatch(md, /\bv1\b[^\n]*\blegacy\b/i, "v1 is the documented floating major, not a legacy leftover");
+  });
+
+  test("RELEASE.md recommends customers pin a full SHA with the version in a comment", () => {
+    assert.match(readText("RELEASE.md"), /pin a full (commit )?SHA[\s\S]{0,200}@<full sha> # v1\.x/i);
   });
 });

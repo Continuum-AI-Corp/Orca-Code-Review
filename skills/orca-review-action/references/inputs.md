@@ -41,8 +41,8 @@ empty string is valid and means "none".
 | Input | Default | What it does |
 | --- | --- | --- |
 | `auto-review-authors` | unset: `OWNER,MEMBER,COLLABORATOR` on a public repo, everyone on a private one | Author-association allowlist for **automatic** reviews. `"*"` reviews everyone on any repo. Others can still be reviewed on demand via `/orcacode-review`. Values: `OWNER`, `MEMBER`, `COLLABORATOR`, `CONTRIBUTOR`, `FIRST_TIME_CONTRIBUTOR`, `FIRST_TIMER`, `MANNEQUIN`, `NONE`, `*`. |
-| `on-skipped-review` | `fail` | What a settings skip (auto-review off, on-demand mode, a draft, an author outside the allowlist) does to the check. `fail` keeps an unreviewed PR from passing a required gate; `pass` makes skips advisory. |
-| `status-context` | `OrcaCode Review` | Commit status written on the PR head after every run (on-demand runs included): success only when a review ran on that head and the gate passed. Make it the required check; needs `statuses: write`. `""` turns it off. |
+| `on-skipped-review` | `pass` | From v1.7.0 (unreleased). What a settings skip (auto-review off, on-demand mode, a draft, an author outside the allowlist) does to the **job**: `pass` keeps it green, as every release did; `fail` fails it. The `status-context` status reports a skip as "Not reviewed" either way. |
+| `status-context` | `OrcaCode Review` | From v1.7.0 (unreleased). Commit status written on the PR head after every run (on-demand runs included): success only when a review ran on that head and the gate passed; a settings skip is "Not reviewed". Make it the required check; needs `statuses: write`. `""` turns it off. |
 
 On a **public** repo this is a spend control, not a preference. The workflow runs on
 `pull_request_target`, which bypasses GitHub's fork-approval gate, and the key is

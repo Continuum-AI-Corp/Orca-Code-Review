@@ -36,9 +36,10 @@
 # the engine is installed from pinned, verified bytes (scripts/install-engine.mjs)
 # and never holds the API key — the proxy injects it; everything posted goes
 # through one sanitising, redacting funnel (scripts/publish-guard.mjs); and the
-# merge gate fails closed — a skip fails per `on-skipped-review`, an undecidable
-# gate fails, a settings outage never loosens block_on — with the verdict also
-# written as a commit status on the PR head (scripts/review-status.mjs).
+# merge gate fails closed — an undecidable gate fails, a settings outage never
+# loosens block_on — with the verdict also written as a commit status on the PR
+# head (scripts/review-status.mjs), where a skip reads "Not reviewed" whatever
+# `on-skipped-review` does to the job.
 
 name: "OrcaCode Review"
 description: "AI code review for every pull request, powered by OrcaRouter"
@@ -144,22 +145,23 @@ inputs:
     description: >-
       What a settings skip (auto-review off in the dashboard, on-demand mode,
       a draft under ready_for_review, an author outside auto-review-authors)
-      does to the check. "fail" (default) fails the job and writes a failing
-      commit status on the PR head, so an unreviewed PR can never satisfy a
-      required merge gate — the same rule as on-oversized-diff. "pass" makes
-      skips advisory: the notice posts and the check stays green. A
-      maintainer's /orcacode-review then reviews the head and its verdict
-      replaces the status.
+      does to the JOB. "pass" (default, as in every earlier release): the
+      notice posts and the job stays green. "fail": the job fails too. Either
+      way the `status-context` commit status on the PR head reports the skip
+      as a failure ("Not reviewed: <reason>"), so a branch rule that requires
+      that status cannot be satisfied by an unreviewed PR; a maintainer's
+      /orcacode-review then reviews the head and its verdict replaces it.
     required: false
-    default: "fail"
+    default: "pass"
   status-context:
     description: >-
       Name (context) of the commit status the action writes on the PR's head
       SHA at the end of every run: success only when a review ran on that head
-      and the severity gate passed (or a skip was made advisory). It is the one
-      check an on-demand /orcacode-review run can update on the PR — that run's
-      own job check is reported on the default branch — so make THIS the
-      required check. Needs `statuses: write`. Empty disables it.
+      and the severity gate passed (or an oversized diff was made advisory with
+      on-oversized-diff: "pass"); a settings skip is a failure, "Not reviewed".
+      It is the one check an on-demand /orcacode-review run can update on the
+      PR — that run's own job check is reported on the default branch — so make
+      THIS the required check. Needs `statuses: write`. Empty disables it.
     required: false
     default: "OrcaCode Review"
   settings:
@@ -672,11 +674,11 @@ runs:
 
     # On a settings-skip: leave ONE small marker comment (created if absent,
     # edited only when the reason changes — repeated pushes must not spam the
-    # timeline or its edit history), then apply `on-skipped-review`. No later
-    # step runs the engine or the gate either way. Default "fail": the check
-    # goes RED and the commit status on the head says why — an unreviewed PR
-    # must not satisfy a required merge gate (the same rule as an oversized
-    # diff). "pass" makes skips advisory.
+    # timeline or its edit history), then apply `on-skipped-review` to the JOB.
+    # No later step runs the engine or the gate either way. Default "pass": the
+    # job stays green, as in every earlier release; the commit status on the
+    # head (Publish the review status) says "Not reviewed", which is what holds
+    # a merge for a customer who requires it. "fail" fails the job too.
     - name: Skip review (settings)
       if: steps.settings.outputs.decision == 'skip'
       uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
@@ -687,6 +689,8 @@ runs:
         PR_NUMBER: ${{ steps.pr.outputs.number }}
         REASON: ${{ steps.settings.outputs.reason }}
         ON_SKIPPED: ${{ inputs.on-skipped-review }}
+        # Named in the notice when it is on: the status that reports the skip.
+        STATUS_CONTEXT: ${{ inputs.status-context }}
         # Every post goes through scripts/publish-guard.mjs: `gh` redacts these
         # two values (in every encoding) from whatever it sends.
         PUBLISH_GUARD: ${{ github.action_path }}/scripts/publish-guard.mjs
@@ -708,8 +712,17 @@ runs:
           const brand = process.env.BRAND;
           const num = Number(process.env.PR_NUMBER);
           const repo = { owner: context.repo.owner, repo: context.repo.repo };
-          // Anything that is not an explicit "pass" fails the check (fail-safe).
-          const pass = process.env.ON_SKIPPED === 'pass';
+          // The JOB fails only on an explicit "fail"; the default and any other
+          // value pass it, as every earlier release did. What protects a merge
+          // is the commit status, which reports every settings skip as "Not
+          // reviewed" (scripts/review-status.mjs) — a skip that failed jobs by
+          // default turned on-demand, draft and outsider PRs red for everyone.
+          const onSkipped = String(process.env.ON_SKIPPED || '').trim().toLowerCase();
+          const fail = onSkipped === 'fail';
+          if (onSkipped && onSkipped !== 'pass' && !fail) {
+            core.warning(`${brand}: on-skipped-review is "${process.env.ON_SKIPPED}", which is neither "pass" nor "fail" — passing the job.`);
+          }
+          const statusName = String(process.env.STATUS_CONTEXT || '').trim();
           // Own marker (distinct from the summary and oversized-skip ones).
           const MARKER = '<!-- orca-code-review-disabled -->';
           const footer =
@@ -718,10 +731,13 @@ runs:
           const body =
             `${MARKER}\n## 🐳 ${brand}\n\n` +
             `⏸️ **Automatic review is off for this PR** (${guard.sanitizeUntrusted(process.env.REASON, { atLineStart: false, maxChars: 300 })}).\n\n` +
-            (pass
-              ? `The check **passes** (\`on-skipped-review: "pass"\`), so this skip does not block your merge. `
-              : `The check **fails** (\`on-skipped-review: "fail"\`, the default): this PR has not been ` +
-                `reviewed, so it cannot satisfy a required merge gate. `) +
+            (fail
+              ? `The check **fails** (\`on-skipped-review: "fail"\`): this PR has not been reviewed. `
+              : `This skip does not fail the job. `) +
+            (statusName
+              ? `The ${guard.codeSpan(statusName, 100)} commit status on the head commit reports it as ` +
+                `**not reviewed**, so a branch rule that requires that status holds the merge until a review runs. `
+              : '') +
             `A maintainer can run a review on demand by commenting \`/orcacode-review\` ` +
             `(\`@orcacode review\` works too) — its verdict replaces this one — or change the ` +
             `repo's review settings in the OrcaRouter dashboard.` +
@@ -739,13 +755,12 @@ runs:
           }
 
           await core.summary.addRaw(`skipped: ${process.env.REASON}`).write();
-          if (pass) {
+          if (!fail) {
             core.notice(`${brand}: review skipped — ${process.env.REASON}`);
           } else {
             core.setFailed(
-              `${brand}: review skipped — ${process.env.REASON}. Failing the check so an unreviewed PR cannot ` +
-              `pass a required merge gate: a maintainer can comment /orcacode-review, or set ` +
-              `on-skipped-review: "pass" to make skips advisory.`,
+              `${brand}: review skipped — ${process.env.REASON}. Failing the job (on-skipped-review: "fail"): ` +
+              `a maintainer can comment /orcacode-review to review the head.`,
             );
           }
 

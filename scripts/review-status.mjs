@@ -4,11 +4,17 @@
 //
 // One pure function, so every ending is decided in one place and tested as a
 // table. `success` means exactly one of two things: a review ran on this head
-// and the severity gate passed it, or the run was skipped and the workflow made
-// that kind of skip advisory on purpose (`on-skipped-review: "pass"`,
-// `on-oversized-diff: "pass"`). Everything else — a skip under the default
-// "fail", a blocked gate, a gate that could not decide, an engine failure, a
-// cancelled run, a run that never reached a decision — is not success.
+// and the severity gate passed it, or the diff was oversized and the workflow
+// made that skip advisory on purpose (`on-oversized-diff: "pass"`). Everything
+// else — a settings skip, a blocked gate, a gate that could not decide, an
+// engine failure, a cancelled run, a run that never reached a decision — is not
+// success.
+//
+// A SETTINGS SKIP IS NEVER SUCCESS HERE, whatever `on-skipped-review` says.
+// That input decides the JOB, and it passes by default: failing the job on
+// every on-demand, auto-review-off, draft or outsider PR broke every customer
+// who requires the `review` job. This status is what a customer who wants
+// "unreviewed cannot merge" makes required, and it says "Not reviewed".
 //
 // Inputs are the raw strings the step reads from step outputs/outcomes, so an
 // absent value (a step that never ran) is "" and lands on a failing branch.
@@ -22,7 +28,7 @@ export function decideStatus({
   reason = "",
   guardDecision = "",
   guardReason = "",
-  onSkipped = "",
+  onSkipped = "", // the job's business only (see above); kept so callers pass one shape
   onOversized = "",
   reviewOutcome = "",
   enforceOutcome = "",
@@ -32,9 +38,7 @@ export function decideStatus({
   const out = (state, description) => ({ state, description: clip(description) });
 
   if (decision === "skip") {
-    return onSkipped === "pass"
-      ? out("success", `Review skipped (${reason}) — advisory`)
-      : out("failure", `Review skipped (${reason}) — not reviewed; a maintainer can comment /orcacode-review`);
+    return out("failure", `Not reviewed: ${reason} — a maintainer can comment /orcacode-review`);
   }
   if (decision !== "review") return out("error", "Review did not start");
 

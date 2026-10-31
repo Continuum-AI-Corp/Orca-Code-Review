@@ -105,13 +105,14 @@ Make the **`OrcaCode Review`** commit status required (input `status-context`;
 the workflow needs `statuses: write`). The action writes it on the PR's head SHA
 at the end of every run, including on-demand runs, whose own job check GitHub
 reports on the default branch. It is `success` only when a review ran on that
-commit and the gate passed — or when you made a skip advisory on purpose.
+commit and the gate passed — or when you made an oversized-diff skip advisory
+on purpose.
 Failure modes are closed:
 
 - A **skipped** review (dashboard auto-review off, on-demand mode, a draft, an
-  author outside `auto-review-authors`) fails the check unless
-  `on-skipped-review: "pass"`; an **oversized** diff fails it unless
-  `on-oversized-diff: "pass"`.
+  author outside `auto-review-authors`) is a failing status, "Not reviewed",
+  whatever the job does (the job passes unless `on-skipped-review: "fail"`);
+  an **oversized** diff fails both unless `on-oversized-diff: "pass"`.
 - If the gate cannot read the result (or crashes), the check fails.
 - If the dashboard settings cannot be read and the workflow leaves `block-on`
   at its default, that run blocks on every severity: an outage can tighten the

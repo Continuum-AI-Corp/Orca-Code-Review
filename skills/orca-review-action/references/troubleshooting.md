@@ -119,14 +119,16 @@ retries are what is eating the clock.
 
 ## The check is red but nothing was reviewed
 
-Expected when a review is skipped: on-demand mode, auto-review off in the
-dashboard, a draft under `ready_for_review`, an author outside
-`auto-review-authors` (on a public repo an unset allowlist means
-`OWNER,MEMBER,COLLABORATOR`), or an oversized diff. An unreviewed PR fails by
-default so it cannot pass a required gate. A maintainer's `/orcacode-review`
-reviews the head and its verdict replaces the `OrcaCode Review` status — which is
-why that status, not the `review` job, should be the required check. To make skips
-advisory instead: `on-skipped-review: "pass"` / `on-oversized-diff: "pass"`.
+An oversized diff fails the `review` job by default, so a PR padded past the
+limits cannot slip through (`on-oversized-diff: "pass"` makes it advisory). A
+settings skip — on-demand mode, auto-review off in the dashboard, a draft under
+`ready_for_review`, an author outside `auto-review-authors` — passes the job with
+a notice; a maintainer's `/orcacode-review` reviews the head.
+
+From v1.7.0 (unreleased) a settings skip also leaves the `OrcaCode Review` commit
+status failing with "Not reviewed: <reason>" until a review runs, and
+`on-skipped-review: "fail"` fails the job too. A red `OrcaCode Review` status on a
+green job is that.
 
 ## `/orcacode-review` did nothing
 

@@ -232,10 +232,11 @@ gh run view <run-id> --log-failed
 `references/troubleshooting.md` maps each symptom to its cause and fix. The four that
 account for most reports:
 
-- **Red check, "review skipped" notice** — the PR is a draft and `trigger` is
-  `ready_for_review`, the author is outside `auto-review-authors` (unset means
-  maintainers only on a public repo), or the app is off in the dashboard. Skips fail by
-  default (`on-skipped-review`); a maintainer's `/orcacode-review` reviews the head.
+- **"Review skipped" notice** — the PR is a draft and `trigger` is
+  `ready_for_review`, the author is outside `auto-review-authors`, or the app is off in
+  the dashboard. The job passes; a maintainer's `/orcacode-review` reviews the head.
+  From v1.7.0 (unreleased) the `OrcaCode Review` status reads "Not reviewed" until a
+  review runs, and `on-skipped-review: "fail"` fails the job too.
 - **Run fails immediately, auth error** — `ORCAROUTER_API_KEY` is missing, misnamed, or
   scoped to an environment the job cannot read.
 - **"Diff too large" notice and a red check** — expected behavior with

@@ -7,14 +7,18 @@
 // the DEFAULT BRANCH's check, so a red verdict never blocked the PR.
 //
 // Now:
-//   - `on-skipped-review` ("fail" by default, "pass" to make skips advisory)
-//     decides what a settings skip does to the job, exactly as
-//     `on-oversized-diff` does for an oversized one;
 //   - every run that resolves a PR writes a commit status (context
 //     `status-context`, default "OrcaCode Review") on the PR's HEAD SHA — the
 //     comment-triggered runs included — and it is `success` only when a review
-//     actually ran on that head and the gate passed, or when a skip was made
-//     advisory on purpose.
+//     actually ran on that head and the gate passed (or an oversized diff was
+//     made advisory with `on-oversized-diff: "pass"`). A settings skip is never
+//     success there: it says "Not reviewed: <reason>".
+//   - the JOB is another matter. Failing it on a skip by default (the first cut
+//     of this fix) turned on-demand mode, auto-review-off, drafts and outsiders'
+//     PRs red for every customer, and broke merges for those who require the
+//     `review` job. So a skip passes the job by default, as it always did, and
+//     `on-skipped-review: "fail"` fails it too. A customer who makes the
+//     status required is protected either way; nobody else regresses.
 
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
@@ -62,19 +66,13 @@ describe("decideStatus", () => {
     assert.notEqual(decideStatus({ ...base, verdict: "" }).state, "success");
   });
 
-  test("a settings skip fails by default, naming the reason", () => {
-    const s = decideStatus({ ...base, decision: "skip", reason: "on-demand mode" });
-    assert.equal(s.state, "failure");
-    assert.match(s.description, /on-demand mode/);
-  });
-
-  test('a settings skip with on-skipped-review: "pass" is advisory success', () => {
-    assert.equal(decideStatus({ ...base, decision: "skip", reason: "draft PR", onSkipped: "pass" }).state, "success");
-  });
-
-  test("anything but an explicit pass fails a skip (fail-safe)", () => {
-    assert.equal(decideStatus({ ...base, decision: "skip", reason: "x", onSkipped: "PASS!" }).state, "failure");
-  });
+  for (const onSkipped of ["pass", "fail", "", "PASS!"]) {
+    test(`a settings skip is "Not reviewed: <reason>", never success (on-skipped-review: ${JSON.stringify(onSkipped)})`, () => {
+      const s = decideStatus({ ...base, decision: "skip", reason: "on-demand mode", onSkipped });
+      assert.equal(s.state, "failure");
+      assert.match(s.description, /^Not reviewed: on-demand mode/);
+    });
+  }
 
   test("an oversized skip follows on-oversized-diff", () => {
     assert.equal(decideStatus({ ...base, guardDecision: "skip", guardReason: "too big" }).state, "failure");
@@ -164,19 +162,32 @@ describe("action.yml: the status is published on the head SHA", () => {
     assert.match(s.if, /steps\.pr\.outputs\.run == 'true'/);
   });
 
-  test("the inputs exist with fail-safe defaults", () => {
+  test("a skip passes the job by default (as before); the status is on by default", () => {
     const inputs = loadAction().inputs;
-    assert.equal(inputs["on-skipped-review"].default, "fail");
+    assert.equal(inputs["on-skipped-review"].default, "pass");
     assert.equal(inputs["status-context"].default, "OrcaCode Review");
+  });
+
+  test("a settings skip's status lands on the head as failure even when the job passes", async () => {
+    const { calls } = await publish({ DECISION: "skip", REASON: "draft PR", ON_SKIPPED: "pass", REVIEW_OUTCOME: "", ENFORCE_OUTCOME: "", VERDICT: "" });
+    assert.equal(calls[0].state, "failure");
+    assert.match(calls[0].description, /^Not reviewed: draft PR/);
   });
 });
 
 describe("action.yml: a settings skip follows on-skipped-review", () => {
-  async function skip(onSkipped) {
+  async function skip(onSkipped, extra = {}) {
     const { core, rec } = fakeCore();
+    const posted = [];
     const github = {
       paginate: async () => [],
-      rest: { issues: { listComments: () => {}, createComment: async () => ({}), updateComment: async () => ({}) } },
+      rest: {
+        issues: {
+          listComments: () => {},
+          createComment: async (a) => posted.push(a.body),
+          updateComment: async (a) => posted.push(a.body),
+        },
+      },
     };
     await runGithubScript(step("Skip review (settings)").with.script, {
       github,
@@ -187,21 +198,39 @@ describe("action.yml: a settings skip follows on-skipped-review", () => {
         PR_NUMBER: "7",
         REASON: "on-demand mode",
         ON_SKIPPED: onSkipped,
+        STATUS_CONTEXT: "OrcaCode Review",
         PUBLISH_GUARD: path.join(ROOT, "scripts", "publish-guard.mjs"),
+        ...extra,
       },
     });
-    return rec;
+    return { rec, posted };
   }
 
-  test('default "fail": the job fails, so a required check cannot pass unreviewed', async () => {
-    assert.ok((await skip("fail")).failed);
+  test('the default ("pass"): the job stays green, as it did before this branch', async () => {
+    const { rec } = await skip(loadAction().inputs["on-skipped-review"].default);
+    assert.equal(rec.failed, null);
   });
 
-  test('"pass": advisory, the job stays green', async () => {
-    assert.equal((await skip("pass")).failed, null);
+  test('"fail": the job fails too', async () => {
+    assert.ok((await skip("fail")).rec.failed);
+    assert.ok((await skip(" FAIL ")).rec.failed, "case and spaces do not matter");
   });
 
-  test("anything else fails (fail-safe)", async () => {
-    assert.ok((await skip("")).failed);
+  test("an unrecognised value passes the job, and says so", async () => {
+    const { rec } = await skip("fial");
+    assert.equal(rec.failed, null);
+    assert.ok(rec.warnings.some((w) => /on-skipped-review/.test(w) && /fial/.test(w)), rec.warnings.join("\n"));
+  });
+
+  test("the notice says the status reports the PR as not reviewed (so a required status still holds it)", async () => {
+    const { posted } = await skip("pass");
+    assert.equal(posted.length, 1);
+    assert.match(posted[0], /OrcaCode Review/);
+    assert.match(posted[0], /not reviewed/i);
+  });
+
+  test("with the status turned off (status-context: \"\") the notice does not promise one", async () => {
+    const { posted } = await skip("pass", { STATUS_CONTEXT: "" });
+    assert.doesNotMatch(posted[0], /commit status/i);
   });
 });

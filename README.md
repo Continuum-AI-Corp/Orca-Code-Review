@@ -259,9 +259,9 @@ To make P0/P1 findings actually prevent merging:
 
 **GitHub → Settings → Branches / Rulesets → Require status checks to pass**
 
-Add the **`OrcaCode Review`** status as required. The action writes it on the PR's head commit at the end of every run, and it is green only when a review actually ran on that commit and the gate passed. It is also the only check an on-demand `/orcacode-review` run can update on the PR — GitHub reports that run's own job check on the default branch. (Requiring the **`review`** job check still works for push-triggered runs, but then an on-demand review can never turn a skipped PR green.)
+Add the **`review`** check (the workflow's job) as required. An oversized diff fails it by default (`on-oversized-diff: "pass"` makes that advisory); a skipped review — on-demand mode, auto-review off, a draft, an author outside `auto-review-authors` — passes it with a notice on the PR.
 
-A PR the action did **not** review never passes: a skipped review (on-demand mode, auto-review off, a draft, an author outside `auto-review-authors`) and an oversized diff both fail the check by default — set `on-skipped-review: "pass"` / `on-oversized-diff: "pass"` to make them advisory.
+From v1.7.0 (unreleased), the action also writes an **`OrcaCode Review`** commit status on the PR's head commit at the end of every run (grant `statuses: write`). It is green only when a review actually ran on that commit and the gate passed; a skipped review reads **"Not reviewed: …"**. Require that status instead of the `review` job once you pin v1.7.0 or later: it is the only check an on-demand `/orcacode-review` run can update on the PR (GitHub reports that run's own job check on the default branch), and it keeps an unreviewed PR from merging while the job stays green. `on-skipped-review: "fail"` fails the job on a skip too.
 
 ---
 
@@ -272,8 +272,8 @@ Security hardening that changes what you may see. Inputs are unchanged except fo
 | What changed | What you will notice | To keep the old behaviour |
 | --- | --- | --- |
 | `auto-review-authors` unset on a **public** repo now means `OWNER,MEMBER,COLLABORATOR` (private repos: everyone, as before) | Fork PRs from outsiders are no longer auto-reviewed on your wallet; a maintainer can `/orcacode-review` them | `auto-review-authors: "*"` |
-| New `on-skipped-review` (default `"fail"`) | A skipped review (on-demand mode, auto-review off, a draft, an author outside the allowlist) **fails** the check instead of passing | `on-skipped-review: "pass"` |
-| New `status-context` (default `"OrcaCode Review"`) | A commit status on the PR head after every run, on-demand runs included. Grant `statuses: write`; require this status instead of the `review` job | `status-context: ""` |
+| New `status-context` (default `"OrcaCode Review"`) | A commit status on the PR head after every run, on-demand runs included: green only for a reviewed head whose gate passed; a skipped review is **"Not reviewed"**. Grant `statuses: write`; require this status instead of the `review` job | `status-context: ""` |
+| New `on-skipped-review` (default `"pass"`) | Nothing, by default: a skipped review still passes the job. `"fail"` fails the job on a skip too | — |
 | Comment commands are checked by the action | `/orcacode-review` from anyone but an owner, member or collaborator, or any other comment, is a no-op | — |
 | Settings outage with `block-on` left at its default | That run blocks on **every** severity (an outage never loosens the gate) | Set `block-on` explicitly |
 | The gate fails closed | A result the gate cannot read now fails the check instead of passing | — |

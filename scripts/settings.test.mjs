@@ -575,14 +575,18 @@ describe("action.yml: gate_decision — shared auto-event gate (both settings pa
   // Run gate_decision under the same `set -eo pipefail` GitHub gives
   // `shell: bash`, with the three env inputs the real step feeds it; returns
   // "<decision>|<reason>".
-  function gate({ event, list = "", assoc = "NONE", args }) {
+  // `isPrivate` defaults to "true": an UNSET allowlist now means
+  // OWNER,MEMBER,COLLABORATOR on a public repository (see events.test.mjs), and
+  // the cases below are about the other gates, so they run where unset still
+  // means everyone. The public-repo default has its own cases.
+  function gate({ event, list = "", assoc = "NONE", args, isPrivate = "true" }) {
     const script =
       `set -eo pipefail\n${extractGate()}\n` +
       `gate_decision ${args}\n` +
       `printf '%s|%s' "$DECISION" "$REASON"\n`;
     const r = spawnSync("bash", ["-c", script], {
       encoding: "utf8",
-      env: { ...process.env, EVENT_NAME: event, AUTO_REVIEW_AUTHORS: list, AUTHOR_ASSOC: assoc },
+      env: { ...process.env, EVENT_NAME: event, AUTO_REVIEW_AUTHORS: list, AUTHOR_ASSOC: assoc, REPO_PRIVATE: isPrivate },
     });
     assert.equal(r.status, 0, r.stderr);
     const [decision, reason] = r.stdout.split("|");
@@ -607,8 +611,17 @@ describe("action.yml: gate_decision — shared auto-event gate (both settings pa
       assert.equal(disabled({ event: "pull_request", list: "MEMBER", assoc: "NONE" }).decision, "skip");
     });
 
-    test("an empty allowlist allows everyone (default preserved)", () => {
+    test("an empty allowlist on a PRIVATE repo allows everyone (default preserved there)", () => {
       assert.equal(disabled({ event: "pull_request_target", list: "", assoc: "NONE" }).decision, "review");
+    });
+
+    // This used to be "an empty allowlist allows everyone" with no regard to
+    // visibility — on a public repo that let any outsider's fork PR spend the
+    // workspace's wallet.
+    test("an empty allowlist on a PUBLIC repo skips an outsider, even with the dashboard fetch off", () => {
+      const { decision, reason } = disabled({ event: "pull_request_target", list: "", assoc: "NONE", isPrivate: "false" });
+      assert.equal(decision, "skip");
+      assert.match(reason, /OWNER,MEMBER,COLLABORATOR/);
     });
 
     test("a comment command (issue_comment) still proceeds even for a disallowed author", () => {

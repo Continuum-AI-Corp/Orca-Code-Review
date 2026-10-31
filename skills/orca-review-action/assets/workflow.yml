@@ -1,12 +1,12 @@
 # OrcaCode Review — https://github.com/Continuum-AI-Corp/orca-code-review
 #
 # The review logic lives in the published action, so this file never copies
-# scripts or config — bump the version tag to update. Add one repository
+# scripts or config. The action is pinned to a release commit (version in the
+# comment); let Dependabot's github-actions updates bump it. Add one repository
 # secret, ORCAROUTER_API_KEY, and enable the app at
 # OrcaRouter -> Apps -> OrcaCode Review.
 
 name: OrcaCode Review
-
 
 on:
   # `synchronize` re-reviews on every new push and `reopened` reviews a PR that
@@ -52,7 +52,7 @@ jobs:
           startsWith(github.event.comment.body, '@orcacode review')) &&
         contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association))
     steps:
-      - uses: Continuum-AI-Corp/orca-code-review@v1
+      - uses: Continuum-AI-Corp/orca-code-review@6d253e0399c84848fedc8801176d6bea77817762 # v1.6.0
         with:
           orcarouter-api-key: ${{ secrets.ORCAROUTER_API_KEY }}
           # Everything below is optional. Keep only the lines you actually

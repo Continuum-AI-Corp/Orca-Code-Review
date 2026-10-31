@@ -140,13 +140,46 @@ Configure your models, review mode, severity rules, merge policy, and other sett
 
 [**Install OrcaCode Review from GitHub Marketplace →**](https://github.com/marketplace/actions/orca-code-review)
 
-Add the Action to your repository:
+Add this workflow as `.github/workflows/orca-code-review.yml` (or let `npx @orcarouter/code-review` write it). Use the whole file, not just the `uses:` step: the job's `if:` is what keeps the paid `/orcacode-review` command to maintainers, and the concurrency block is what stops any commenter from cancelling a running review. The action also refuses an outsider's command on its own, but the workflow is the first gate.
 
 ```yaml
-- uses: Continuum-AI-Corp/orca-code-review@v1
-  with:
-    orcarouter-api-key: ${{ secrets.ORCAROUTER_API_KEY }}
+name: OrcaCode Review
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  statuses: write # the verdict on the PR head — the check to make required
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.event_name == 'issue_comment' && 'comment' || 'pr' }}-${{ github.event.pull_request.number || github.event.issue.number }}
+      cancel-in-progress: ${{ github.event_name != 'issue_comment' }}
+    if: |
+      (github.event_name == 'pull_request_target' &&
+        (github.event.action != 'edited' || github.event.changes.base)) ||
+      (github.event_name == 'issue_comment' &&
+        github.event.issue.pull_request &&
+        (startsWith(github.event.comment.body, '/orcacode-review') ||
+          startsWith(github.event.comment.body, '/orcacode review') ||
+          startsWith(github.event.comment.body, '@orcacode-review') ||
+          startsWith(github.event.comment.body, '@orcacode review')) &&
+        contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association))
+    steps:
+      - uses: Continuum-AI-Corp/orca-code-review@6d253e0399c84848fedc8801176d6bea77817762 # v1.6.0
+        with:
+          orcarouter-api-key: ${{ secrets.ORCAROUTER_API_KEY }}
 ```
+
+The action is pinned to a release **commit**, with its version in the comment, rather than to a tag that can be moved: enable Dependabot's `github-actions` updates and each new release arrives as a reviewable PR. The full example, with every optional input, is [`workflows/orca-code-review.yml`](workflows/orca-code-review.yml).
 
 ### 3. Add your API key
 
@@ -226,7 +259,9 @@ To make P0/P1 findings actually prevent merging:
 
 **GitHub → Settings → Branches / Rulesets → Require status checks to pass**
 
-Add the **`review`** check as required.
+Add the **`OrcaCode Review`** status as required. The action writes it on the PR's head commit at the end of every run, and it is green only when a review actually ran on that commit and the gate passed. It is also the only check an on-demand `/orcacode-review` run can update on the PR — GitHub reports that run's own job check on the default branch. (Requiring the **`review`** job check still works for push-triggered runs, but then an on-demand review can never turn a skipped PR green.)
+
+A PR the action did **not** review never passes: a skipped review (on-demand mode, auto-review off, a draft, an author outside `auto-review-authors`) and an oversized diff both fail the check by default — set `on-skipped-review: "pass"` / `on-oversized-diff: "pass"` to make them advisory.
 
 ---
 

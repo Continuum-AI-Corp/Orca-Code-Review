@@ -17,10 +17,9 @@
 # closed if any of it is off.
 #
 # NOTE: this workflow deliberately creates no git tags. The npm package version
-# and the action's own `v1.x` release tags are SEPARATE version lines (the
-# action is on v1.4.x while the CLI starts at 1.0.0). Tagging `v1.0.0` here
-# would collide with the action's tag series and could move consumers'
-# `uses: ...@v1` onto the wrong commit. Action tags stay manual — see RELEASE.md.
+# and the action's own `v1.x` release tags are SEPARATE version lines, and
+# action release tags are created by hand, once, and never moved — see
+# RELEASE.md.
 
 name: Publish
 
@@ -90,25 +89,33 @@ jobs:
             exit 1
           fi
 
-      # The installers generate a workflow pinned to `@v1`. If that tag predates
-      # scripts/settings.mjs and scripts/report.mjs, every new user gets working
-      # reviews with a silently inert Settings tab and empty Analytics — no
-      # error, just two dead console tabs. Refuse to ship an installer into that.
-      - name: Verify the v1 tag can serve what the installer generates
+      # The installers generate a workflow pinned to ACTION_SHA (with
+      # ACTION_VERSION in a comment) — never to a movable tag. Refuse to ship an
+      # installer that pins a commit which is not a tagged release, or which
+      # predates scripts/settings.mjs and scripts/report.mjs (every new user
+      # would get working reviews with a silently inert Settings tab and empty
+      # Analytics).
+      - name: Verify the pinned action commit can serve what the installer generates
         if: steps.check.outputs.needed == 'true'
         run: |
           set -euo pipefail
-          if ! git rev-parse -q --verify refs/tags/v1 >/dev/null; then
-            echo "::error::No v1 tag. The generated workflow pins @v1 — see RELEASE.md."
+          SHA=$(node --input-type=module -e 'const m = await import("./bin/orcacode-review.mjs"); console.log(m.ACTION_SHA)')
+          VER=$(node --input-type=module -e 'const m = await import("./bin/orcacode-review.mjs"); console.log(m.ACTION_VERSION)')
+          if ! git cat-file -e "$SHA^{commit}" 2>/dev/null; then
+            echo "::error::ACTION_SHA $SHA is not a commit in this repository — see RELEASE.md."
+            exit 1
+          fi
+          if [ "$(git rev-parse -q --verify "refs/tags/$VER^{commit}" || true)" != "$SHA" ]; then
+            echo "::error::ACTION_SHA $SHA is not the commit tagged $VER — tag the release first (RELEASE.md)."
             exit 1
           fi
           for f in scripts/settings.mjs scripts/report.mjs; do
-            if ! git cat-file -e "v1:$f" 2>/dev/null; then
-              echo "::error::v1 is missing $f. Move the v1 tag before publishing (RELEASE.md)."
+            if ! git cat-file -e "$SHA:$f" 2>/dev/null; then
+              echo "::error::the pinned commit $SHA is missing $f (RELEASE.md)."
               exit 1
             fi
           done
-          echo "v1 = $(git rev-parse --short v1), ships settings.mjs and report.mjs"
+          echo "installer pins $VER = $SHA, which ships settings.mjs and report.mjs"
 
       - name: Test
         if: steps.check.outputs.needed == 'true'

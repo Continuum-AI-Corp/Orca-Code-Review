@@ -65,7 +65,9 @@ test("importing the CLI runs nothing", () => {
     { encoding: "utf8" },
   );
   assert.equal(r.status, 0, r.stderr);
-  assert.equal(r.stdout.trim(), "DEFAULTS,parseOverrides,readOverrides,renderWorkflow");
+  // ACTION_SHA / ACTION_VERSION joined the exports: the release the generated
+  // workflow pins is read by release-pin.test.mjs and by publish.yml's gate.
+  assert.equal(r.stdout.trim(), "ACTION_SHA,ACTION_VERSION,DEFAULTS,parseOverrides,readOverrides,renderWorkflow");
 });
 
 test("the published version matches package.json", () => {

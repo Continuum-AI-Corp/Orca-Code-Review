@@ -7,15 +7,14 @@
 
 name: OrcaCode Review
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}
-  cancel-in-progress: true
 
 on:
-  # `synchronize` re-reviews on every new push. `ready_for_review` makes the
-  # dashboard's trigger=ready_for_review mode fire when a draft becomes ready.
+  # `synchronize` re-reviews on every new push and `reopened` reviews a PR that
+  # comes back. `edited` re-reviews a PR RETARGETED to another base branch (the
+  # job's `if:` ignores title and description edits). `ready_for_review` makes
+  # the dashboard's trigger=ready_for_review mode fire when a draft is ready.
   pull_request_target:
-    types: [opened, synchronize, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
   issue_comment:
     types: [created]
 
@@ -23,10 +22,19 @@ permissions:
   contents: read
   pull-requests: write
   issues: write # clean/fallback PR comments
+  statuses: write # the verdict on the PR head — the check to make required
 
 jobs:
   review:
     runs-on: ubuntu-latest
+    # Concurrency is PER JOB, in two groups. A workflow-level group with
+    # cancel-in-progress let ANY comment on the PR cancel an in-flight review:
+    # every comment starts a run in the same group, which then skips. Push runs
+    # share one group per PR and a newer push supersedes an older one; comment
+    # runs (/orcacode-review) get their own group and never cancel anything.
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.event_name == 'issue_comment' && 'comment' || 'pr' }}-${{ github.event.pull_request.number || github.event.issue.number }}
+      cancel-in-progress: ${{ github.event_name != 'issue_comment' }}
     # Run on PR events, or when a trusted user comments the review command on a
     # PR. All four spellings are accepted — either prefix (`/` or `@`) with
     # either separator (hyphen or space). The command runs this privileged
@@ -34,7 +42,8 @@ jobs:
     # maintainers may trigger it — otherwise any participant could burn paid
     # quota and spam reviews without pushing new commits.
     if: |
-      github.event_name == 'pull_request_target' ||
+      (github.event_name == 'pull_request_target' &&
+        (github.event.action != 'edited' || github.event.changes.base)) ||
       (github.event_name == 'issue_comment' &&
         github.event.issue.pull_request &&
         (startsWith(github.event.comment.body, '/orcacode-review') ||

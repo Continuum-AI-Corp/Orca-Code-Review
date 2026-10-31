@@ -294,7 +294,7 @@ const section = (yaml, key) => {
   return [lines[start], ...(end === -1 ? rest : rest.slice(0, end))].join("\n");
 };
 
-for (const key of ["permissions", "on", "concurrency"]) {
+for (const key of ["permissions", "on"]) {
   test(`the example workflow and the skill template agree on \`${key}:\``, () => {
     const a = section(EXAMPLE, key);
     const b = section(TEMPLATE, key);
@@ -302,6 +302,24 @@ for (const key of ["permissions", "on", "concurrency"]) {
     assert.equal(b, a, `the skill template's ${key}: block has drifted from the example`);
   });
 }
+
+// Concurrency moved from the workflow to the job (a workflow-level group let
+// any comment cancel an in-flight review), so this compares the PARSED job
+// blocks — of all three copies, the installer's rendered one included — rather
+// than a top-level `concurrency:` section that must no longer exist.
+test("all three workflow copies agree on the review job's concurrency, if and permissions", async () => {
+  const YAML = (await import("yaml")).default;
+  const docs = [EXAMPLE, TEMPLATE, renderWorkflow({ ...DEFAULTS })].map((t) => YAML.parse(t));
+  for (const d of docs) assert.equal(d.concurrency, undefined, "no workflow-level concurrency");
+  const shape = (d) => ({
+    on: d.on,
+    permissions: d.permissions,
+    concurrency: d.jobs.review.concurrency,
+    if: d.jobs.review.if,
+  });
+  assert.deepEqual(shape(docs[1]), shape(docs[0]), "skill template drifted from the example");
+  assert.deepEqual(shape(docs[2]), shape(docs[0]), "the installer's workflow drifted from the example");
+});
 
 test("neither workflow copy mentions a tier label that no longer exists", () => {
   // There is no add/remove-label step in action.yml. `issues: write` is still

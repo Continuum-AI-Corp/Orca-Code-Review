@@ -140,13 +140,46 @@ Configure your models, review mode, severity rules, merge policy, and other sett
 
 [**Install OrcaCode Review from GitHub Marketplace →**](https://github.com/marketplace/actions/orca-code-review)
 
-Add the Action to your repository:
+Add this workflow as `.github/workflows/orca-code-review.yml` (or let `npx @orcarouter/code-review` write it). Use the whole file, not just the `uses:` step: the job's `if:` is what keeps the paid `/orcacode-review` command to maintainers, and the concurrency block is what stops any commenter from cancelling a running review. The action also refuses an outsider's command on its own, but the workflow is the first gate.
 
 ```yaml
-- uses: Continuum-AI-Corp/orca-code-review@v1
-  with:
-    orcarouter-api-key: ${{ secrets.ORCAROUTER_API_KEY }}
+name: OrcaCode Review
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  statuses: write # used from v1.7.0 (unreleased): the verdict on the PR head
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.event_name == 'issue_comment' && 'comment' || 'pr' }}-${{ github.event.pull_request.number || github.event.issue.number }}
+      cancel-in-progress: ${{ github.event_name != 'issue_comment' }}
+    if: |
+      (github.event_name == 'pull_request_target' &&
+        (github.event.action != 'edited' || github.event.changes.base)) ||
+      (github.event_name == 'issue_comment' &&
+        github.event.issue.pull_request &&
+        (startsWith(github.event.comment.body, '/orcacode-review') ||
+          startsWith(github.event.comment.body, '/orcacode review') ||
+          startsWith(github.event.comment.body, '@orcacode-review') ||
+          startsWith(github.event.comment.body, '@orcacode review')) &&
+        contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association))
+    steps:
+      - uses: Continuum-AI-Corp/orca-code-review@6d253e0399c84848fedc8801176d6bea77817762 # v1.6.0
+        with:
+          orcarouter-api-key: ${{ secrets.ORCAROUTER_API_KEY }}
 ```
+
+The action is pinned to a release **commit**, with its version in the comment, rather than to a tag that can be moved: enable Dependabot's `github-actions` updates and each new release arrives as a reviewable PR. The full example, with every optional input, is [`workflows/orca-code-review.yml`](workflows/orca-code-review.yml).
 
 ### 3. Add your API key
 
@@ -216,7 +249,9 @@ Comment on any PR:
 /orcacode-review
 ```
 
-to request another review.
+to request another review. Only an **owner, member or collaborator** can: the workflow's `if:` ignores the command from anyone else.
+
+From v1.7.0 (unreleased) the action itself ignores an outsider's command too, whatever the workflow says, and the verdict lands on the PR's head commit as the `OrcaCode Review` status. On a PR **from a fork**, name the commit you looked at — `/orcacode-review <sha>`, at least 7 characters of it: the action reviews exactly that commit, and only while it is still the PR's head, so the fork cannot push something else in between. A bare command there, or a commit that is no longer the head, gets a reply with the current head and the command to use. Same-repository PRs keep the bare command.
 
 ---
 
@@ -226,13 +261,41 @@ To make P0/P1 findings actually prevent merging:
 
 **GitHub → Settings → Branches / Rulesets → Require status checks to pass**
 
-Add the **`review`** check as required.
+Add the **`review`** check (the workflow's job) as required. An oversized diff fails it by default (`on-oversized-diff: "pass"` makes that advisory); a skipped review — on-demand mode, auto-review off, a draft, an author outside `auto-review-authors` — passes it with a notice on the PR.
+
+From v1.7.0 (unreleased), the action also writes an **`OrcaCode Review`** commit status on the PR's head commit at the end of every run (grant `statuses: write`). It is green only when a review actually ran on that commit and the gate passed; a skipped review reads **"Not reviewed: …"**. Require that status instead of the `review` job once your workflow pins the release that writes it: it is the only check an on-demand `/orcacode-review` run can update on the PR (GitHub reports that run's own job check on the default branch), and it keeps an unreviewed PR from merging while the job stays green. `on-skipped-review: "fail"` fails the job on a skip too.
+
+---
+
+## Upgrading: what changes from v1.7.0 (unreleased)
+
+Security hardening that changes what you may see. The installer, the example workflow and the quickstart above still pin **v1.6.0**, so none of this applies until you pin the release that ships it. Inputs are unchanged except for three new ones; defaults that close a hole are new.
+
+| What changed | What you will notice | To keep the old behaviour |
+| --- | --- | --- |
+| `auto-review-authors` unset on a **public** repo now means `OWNER,MEMBER,COLLABORATOR` (private repos: everyone, as before) | Fork PRs from outsiders are no longer auto-reviewed on your wallet; a maintainer can `/orcacode-review` them | `auto-review-authors: "OWNER,MEMBER,COLLABORATOR,CONTRIBUTOR,FIRST_TIME_CONTRIBUTOR,FIRST_TIMER,MANNEQUIN,NONE"` (`"*"` works too from v1.7.0 (unreleased), but v1.6.0 reads it as nobody) |
+| New `status-context` (default `"OrcaCode Review"`) | A commit status on the PR head after every run, on-demand runs included: green only for a reviewed head whose gate passed; a skipped review is **"Not reviewed"**. Grant `statuses: write`; require this status instead of the `review` job | `status-context: ""` |
+| New `on-skipped-review` (default `"pass"`) | Nothing, by default: a skipped review still passes the job. `"fail"` fails the job on a skip too | — |
+| New `bot-login` (default `""`) | Only for a custom GitHub App token: name its login (`"my-app[bot]"`) so the action recognises its earlier notices and edits them instead of posting new ones | — |
+| Comment commands are checked by the action | `/orcacode-review` from anyone but an owner, member or collaborator, or any other comment, is a no-op | — |
+| The pusher is checked, not only the author | A push to a fork PR by someone other than its author, who cannot write to your repository, is not auto-reviewed (the status says "Not reviewed"); a maintainer can `/orcacode-review` it | `auto-review-authors: "*"` |
+| An allowlist of events | The action runs only on `pull_request` / `pull_request_target` (opened, synchronize, reopened, ready_for_review, a retargeting edit) and `issue_comment` (created); anything else — `pull_request_review`, `pull_request_review_comment`, a push — is a no-op that says why | — |
+| A settings fetch that gets no settings — a 4xx (an ordinary, non-CI key gets one on every run) or an outage | The workflow's inputs apply for that run, exactly as with `settings: "false"`, and the log names the cause. `block-on` in the workflow is the outage floor: set it to what the dashboard enforces if an outage must not loosen the gate | — |
+| The gate fails closed | A result the gate cannot read now fails the check instead of passing | — |
+| `engine-version` must be pinned | Only versions with checksums in `scripts/engine-pins.json` install; anything else fails the run | — |
+| `orcarouter-url` must be https | A plain-http gateway URL fails the run at its first step, with an error naming `orcarouter-url` and the fix (put TLS in front of a self-hosted gateway). Plain http stays allowed to this machine — `localhost`, `127.0.0.0/8`, `[::1]`. The settings fetch and the run report no longer send the key over plain http either | — |
+| What is posted is sanitised | @mentions don't ping, HTML is shown as text, off-site links are shown as code, at most 50 findings are posted per review, guardrail details are hidden on public repos | — |
+| The checkout is hardened | Symlinks are removed, the PR's `.gitattributes` cannot hide the diff, the base `.gitignore` applies; the summary lists changed files the engine skips. Lockfiles (`package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `bun.lockb`, `go.sum`, `Cargo.lock`, `poetry.lock`, `composer.lock`, `Gemfile.lock`, by file name) are not counted toward `max-diff-kb` / `max-diff-files`, so a dependency bump does not skip a PR; the summary lists them | — |
+| Severity is never lowered | Duplicates keep the most severe tag; the judge cannot drop a P0 or a security finding | — |
+| Shipped workflows | Per-job concurrency (a comment cannot cancel a running review; a newer comment replaces only a comment run still pending), re-run on `reopened` and on a retargeted base (`edited`), `statuses: write`, the action pinned to a commit SHA | Update your copy from [`workflows/orca-code-review.yml`](workflows/orca-code-review.yml) |
+
+Self-hosted runners need git 2.31 or newer for private-repository fetches (the token travels in `GIT_CONFIG_*` environment variables, not on git's command line).
 
 ---
 
 ## Security & Privacy
 
-OrcaCode reads the PR diff and repository files required for review. **It does not execute PR code.**
+OrcaCode reads the PR diff and repository files required for review. **It does not execute PR code.** From v1.7.0 (unreleased), **the review engine never holds your API key** — an in-job proxy adds it on the way to OrcaRouter — and everything posted to the PR is sanitised and has your key and token redacted.
 
 Optional run reporting sends only review metadata — repository, PR, commit SHA, tier, severity counts, gate result, and engine version.
 

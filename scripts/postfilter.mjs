@@ -15,6 +15,7 @@
 
 import fs from "node:fs";
 import { execFileSync } from "node:child_process";
+import { severityOf, moreSevere, withSeverity } from "./severity.mjs";
 
 const [file, repo, commit, ...rest] = process.argv.slice(2);
 let out = null;
@@ -169,12 +170,22 @@ for (const c of comments) {
 
 const norm = (s) =>
   (s || "").replace(/^\s*\[P[0-3]\]\s*/, "").toLowerCase().replace(/\s+/g, " ").trim().slice(0, 160);
-const seen = new Map();
+// A duplicate is folded into the first copy (its location wins), but the copy
+// that survives carries the MOST SEVERE tag among them: the tag is stripped to
+// compare, so "[P3] x" then "[P0] x" are one finding — and it is a P0.
+const seen = new Map(); // normalized content -> index in deduped
 const deduped = [];
 for (const c of kept) {
   const k = norm(c.content);
-  if (seen.has(k)) { report.push({ sev: "-", from: c.path, action: `DROP (dup of ${seen.get(k)})` }); continue; }
-  seen.set(k, c.path);
+  if (seen.has(k)) {
+    const i = seen.get(k);
+    const first = deduped[i];
+    const sev = moreSevere(severityOf(first), severityOf(c));
+    if (sev !== severityOf(first)) deduped[i] = withSeverity(first, sev);
+    report.push({ sev: "-", from: c.path, action: `DROP (dup of ${first.path}${sev !== severityOf(first) ? `; kept at ${sev}` : ""})` });
+    continue;
+  }
+  seen.set(k, deduped.length);
   deduped.push(c);
 }
 

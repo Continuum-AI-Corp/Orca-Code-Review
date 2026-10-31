@@ -65,7 +65,9 @@ test("importing the CLI runs nothing", () => {
     { encoding: "utf8" },
   );
   assert.equal(r.status, 0, r.stderr);
-  assert.equal(r.stdout.trim(), "DEFAULTS,parseOverrides,readOverrides,renderWorkflow");
+  // ACTION_SHA / ACTION_VERSION joined the exports: the release the generated
+  // workflow pins is read by release-pin.test.mjs and by publish.yml's gate.
+  assert.equal(r.stdout.trim(), "ACTION_SHA,ACTION_VERSION,DEFAULTS,EVERY_ASSOCIATION,authorChoices,parseOverrides,readOverrides,renderWorkflow");
 });
 
 test("the published version matches package.json", () => {
@@ -294,7 +296,7 @@ const section = (yaml, key) => {
   return [lines[start], ...(end === -1 ? rest : rest.slice(0, end))].join("\n");
 };
 
-for (const key of ["permissions", "on", "concurrency"]) {
+for (const key of ["permissions", "on"]) {
   test(`the example workflow and the skill template agree on \`${key}:\``, () => {
     const a = section(EXAMPLE, key);
     const b = section(TEMPLATE, key);
@@ -302,6 +304,24 @@ for (const key of ["permissions", "on", "concurrency"]) {
     assert.equal(b, a, `the skill template's ${key}: block has drifted from the example`);
   });
 }
+
+// Concurrency moved from the workflow to the job (a workflow-level group let
+// any comment cancel an in-flight review), so this compares the PARSED job
+// blocks — of all three copies, the installer's rendered one included — rather
+// than a top-level `concurrency:` section that must no longer exist.
+test("all three workflow copies agree on the review job's concurrency, if and permissions", async () => {
+  const YAML = (await import("yaml")).default;
+  const docs = [EXAMPLE, TEMPLATE, renderWorkflow({ ...DEFAULTS })].map((t) => YAML.parse(t));
+  for (const d of docs) assert.equal(d.concurrency, undefined, "no workflow-level concurrency");
+  const shape = (d) => ({
+    on: d.on,
+    permissions: d.permissions,
+    concurrency: d.jobs.review.concurrency,
+    if: d.jobs.review.if,
+  });
+  assert.deepEqual(shape(docs[1]), shape(docs[0]), "skill template drifted from the example");
+  assert.deepEqual(shape(docs[2]), shape(docs[0]), "the installer's workflow drifted from the example");
+});
 
 test("neither workflow copy mentions a tier label that no longer exists", () => {
   // There is no add/remove-label step in action.yml. `issues: write` is still
@@ -439,4 +459,23 @@ test("an unknown --mode is refused by name, with the choices", (t) => {
   assert.notEqual(r.status, 0);
   assert.match(r.stderr, /Unknown mode "remote"/);
   assert.match(r.stderr, /both \| local \| action/);
+});
+
+// ------------------------------------------------- public-repo author default ---
+
+// "Everyone" must mean everyone to the release the generated workflow PINS as
+// well as to the next one: unset means everyone to v1.6.0 but maintainers-only
+// on a public repo to the next release, and "*" means everyone to the next
+// release but nobody to v1.6.0. So it is written as the full association list
+// (scripts/pinned-release.test.mjs runs every answer through both gates).
+test('the public-repo "Everyone" answer writes every association, not "*" and not the default', async () => {
+  const { authorChoices, EVERY_ASSOCIATION } = await import(CLI);
+  const choices = authorChoices((k) => k);
+  const everyone = choices.find((c) => c.label === "config.authorsAll");
+  assert.equal(everyone.value, EVERY_ASSOCIATION);
+  const yaml = renderWorkflow({ ...DEFAULTS, "auto-review-authors": everyone.value });
+  assert.match(yaml, new RegExp(`^\\s+auto-review-authors: "${EVERY_ASSOCIATION}"`, "m"));
+  assert.equal(parseOverrides(yaml)["auto-review-authors"], EVERY_ASSOCIATION);
+  const known = choices.find((c) => c.recommended);
+  assert.notEqual(known.value, "", "the recommended answer must be written, not left to a default");
 });

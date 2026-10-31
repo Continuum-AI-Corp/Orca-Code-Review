@@ -20,6 +20,7 @@
 
 import fs from "node:fs";
 import os from "node:os";
+import { severityOf, moreSevere, withSeverity, isSecurityFinding } from "./severity.mjs";
 
 // A STABLE FIRST LINE, WHATEVER HAPPENS. action.yml lifts the first line of
 // this script's stderr into the job's user-facing L2 failure reason, so an
@@ -257,6 +258,12 @@ for (const g of groups) for (const id of g.member_ids || []) covered.add(id);
 for (let i = 0; i < findings.length; i += 1) if (!covered.has(i))
   groups.push({ member_ids: [i], representative_id: i, confidence: 1.0, keep: true, root_cause: "(uncovered)", reason: "not classified by judge; kept fail-open above any threshold" });
 
+// THE JUDGE MAY RE-RANK AND ANNOTATE; IT MAY NOT LOSE A P0 OR A SECURITY
+// FINDING. Its verdict comes from a model reading text the PR shaped, so a P0
+// (or anything about security) it would drop is kept anyway and the log says
+// so. And whichever member represents a cluster, the kept finding carries the
+// MOST SEVERE tag in that cluster — clustering a P0 under a P3 must not demote it.
+const isProtected = (c) => severityOf(c) === "P0" || isSecurityFinding(c);
 const kept = [];
 const dropped = [];
 for (const g of groups) {
@@ -303,11 +310,33 @@ for (const g of groups) {
     ? g.member_ids.filter((id) => id !== repId)
     : [];
   const line = `[conf ${Number.isFinite(boundedConf) ? boundedConf.toFixed(2) : "?"}] ${(rep?.content || "").match(/\[(P[0-3])\]/)?.[0] || ""} ${rep?.path ?? "?"} :: ${g.root_cause} ${others.length ? "(merged " + others.length + ")" : ""}`;
+  // Every valid member of the cluster, the representative included.
+  const members = [...new Set([repId, ...(Array.isArray(g.member_ids) ? g.member_ids : [])])]
+    .filter((id) => Number.isInteger(id) && id >= 0 && id < comments.length && comments[id])
+    .map((id) => comments[id]);
+  const worst = members.reduce((acc, c) => moreSevere(acc, severityOf(c)), "P3");
   if (surv) {
     if (!rep) { console.error("skip malformed judge group (no valid rep): " + JSON.stringify(g).slice(0, 120)); continue; }
-    kept.push(rep);
-    console.error("KEEP  " + line);
-  } else { dropped.push(g); console.error("drop  " + line + " — " + (g.reason || "")); }
+    kept.push(severityOf(rep) === worst ? rep : withSeverity(rep, worst));
+    console.error("KEEP  " + line + (severityOf(rep) === worst ? "" : ` (raised to ${worst}, the cluster's most severe)`));
+    continue;
+  }
+  const guarded = members.filter(isProtected);
+  if (guarded.length) {
+    // Prefer the judge's own representative when it is protected; otherwise
+    // the most severe protected member. One per cluster, as for a kept group.
+    const keepRep = isProtected(rep)
+      ? rep
+      : guarded.reduce((a, c) => (moreSevere(severityOf(a), severityOf(c)) === severityOf(a) ? a : c));
+    kept.push(severityOf(keepRep) === worst ? keepRep : withSeverity(keepRep, worst));
+    console.error(
+      "KEEP* " + line + " — the judge would drop it, but a P0 or security finding cannot be dropped by the judge" +
+        (g.reason ? ` (judge: ${g.reason})` : ""),
+    );
+    continue;
+  }
+  dropped.push(g);
+  console.error("drop  " + line + " — " + (g.reason || ""));
 }
 
 if (out) fs.writeFileSync(out, JSON.stringify({ ...data, comments: kept }, null, 1));

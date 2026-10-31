@@ -29,6 +29,22 @@
 # pinned at the top, replaced in place on every push; and a best-effort per-tier run report
 # (scripts/report.mjs) posts severity counts — never code — to the OrcaRouter
 # control plane after the gate.
+#
+# Security posture (SECURITY.md has the detail): the action runs on an
+# allowlist of events; a comment trigger runs only for a maintainer's review
+# command, checked here and not only in the workflow, and on a fork PR only for
+# the commit it names while that is still the head; a push to a fork PR is
+# auto-reviewed only if its pusher (not just its author) passes; the action's
+# own comments are recognised by one identity funnel (scripts/identity.mjs);
+# the key goes in clear only to this machine (scripts/gateway-url.mjs); the
+# checkout is hardened before anything reads it (scripts/harden-checkout.mjs);
+# the engine is installed from pinned, verified bytes (scripts/install-engine.mjs)
+# and never holds the API key — the proxy injects it; everything posted goes
+# through one sanitising, redacting funnel (scripts/publish-guard.mjs); and the
+# merge gate fails closed — an undecidable gate fails, a settings outage never
+# loosens block_on — with the verdict also written as a commit status on the PR
+# head (scripts/review-status.mjs), where a skip reads "Not reviewed" whatever
+# `on-skipped-review` does to the job.
 
 name: "OrcaCode Review"
 description: "AI code review for every pull request, powered by OrcaRouter"
@@ -47,9 +63,20 @@ inputs:
     required: false
     default: "https://api.orcarouter.ai/v1/chat/completions"
   github-token:
-    description: "Token used to fetch the PR head, post review comments, and react to a /orcacode-review command."
+    description: "Token used to fetch the PR head, post review comments, write the commit status on the PR head, and react to a /orcacode-review command."
     required: false
     default: ${{ github.token }}
+  bot-login:
+    description: >-
+      The login the action posts as, when github-token is a GitHub App's
+      installation token other than the job's own (e.g. "my-app[bot]"). The
+      action recognises its earlier notices by this login; without it, such a
+      token's identity is learned only from the first comment the action posts
+      in a run, so a notice from an earlier run is posted again instead of
+      edited. Not needed for the default github.token (github-actions[bot]) or
+      a personal token (its user).
+    required: false
+    default: ""
   brand:
     description: "Name shown on PR comments."
     required: false
@@ -78,15 +105,17 @@ inputs:
   auto-review-authors:
     description: >-
       Comma-separated GitHub author-association allowlist for AUTOMATIC
-      reviews (pull_request events). Empty = review everyone (default). On a
-      PUBLIC repo, pull_request_target bypasses GitHub's fork-approval gate
-      and the review key is wallet-metered, so an external user can trigger
-      paid reviews by opening PRs — set e.g.
-      "OWNER,MEMBER,COLLABORATOR,CONTRIBUTOR" to auto-review only known
-      contributors (others can still be reviewed on demand via
-      /orcacode-review). Also set a wallet budget + alert on the key.
-      Case-insensitive; values: OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR,
-      FIRST_TIME_CONTRIBUTOR, FIRST_TIMER, MANNEQUIN, NONE.
+      reviews (pull_request events). Unset (empty) depends on the repository:
+      on a PUBLIC repository (or when visibility is unknown) it means
+      "OWNER,MEMBER,COLLABORATOR" — pull_request_target bypasses GitHub's
+      fork-approval gate and the review key is wallet-metered, so without this
+      any outsider's fork PR would spend your workspace's balance; on a
+      PRIVATE repository it means everyone, as before. "*" reviews everyone on
+      any repository (the explicit opt-out). Authors outside the list can
+      still be reviewed on demand by a maintainer's /orcacode-review comment.
+      Also set a wallet budget + alert on the key. Case-insensitive; values:
+      OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, FIRST_TIME_CONTRIBUTOR,
+      FIRST_TIMER, MANNEQUIN, NONE, or "*".
     required: false
     default: ""
   max-diff-kb:
@@ -128,6 +157,29 @@ inputs:
       the skip notice posts and the check stays green.
     required: false
     default: "fail"
+  on-skipped-review:
+    description: >-
+      What a settings skip (auto-review off in the dashboard, on-demand mode,
+      a draft under ready_for_review, an author outside auto-review-authors)
+      does to the JOB. "pass" (default, as in every earlier release): the
+      notice posts and the job stays green. "fail": the job fails too. Either
+      way the `status-context` commit status on the PR head reports the skip
+      as a failure ("Not reviewed: <reason>"), so a branch rule that requires
+      that status cannot be satisfied by an unreviewed PR; a maintainer's
+      /orcacode-review then reviews the head and its verdict replaces it.
+    required: false
+    default: "pass"
+  status-context:
+    description: >-
+      Name (context) of the commit status the action writes on the PR's head
+      SHA at the end of every run: success only when a review ran on that head
+      and the severity gate passed (or an oversized diff was made advisory with
+      on-oversized-diff: "pass"); a settings skip is a failure, "Not reviewed".
+      It is the one check an on-demand /orcacode-review run can update on the
+      PR — that run's own job check is reported on the default branch — so make
+      THIS the required check. Needs `statuses: write`. Empty disables it.
+    required: false
+    default: "OrcaCode Review"
   settings:
     description: >-
       Fetch per-repo review settings from the OrcaRouter dashboard at the
@@ -144,7 +196,12 @@ inputs:
     required: false
     default: "true"
   engine-version:
-    description: "Pinned @alibaba-group/open-code-review version (the review engine). Bump deliberately after testing — the later steps parse its JSON output shape."
+    description: >-
+      Pinned @alibaba-group/open-code-review version (the review engine). Only
+      versions whose checksums this release of the action pins
+      (scripts/engine-pins.json: the npm tarball's sha512 and each platform
+      binary's sha256) can be installed — any other value fails the run. Bump
+      deliberately after testing; the later steps parse its JSON output shape.
     required: false
     default: "1.3.13"
   timeout-minutes:
@@ -244,37 +301,210 @@ runs:
           "$RUNNER_TEMP/result-merged.json" \
           "$RUNNER_TEMP/cr-settings.json" "$RUNNER_TEMP/cr-rubric.md" \
           "$RUNNER_TEMP/cr-facts.json" "$RUNNER_TEMP/proxy.out" "$RUNNER_TEMP/proxy.err" \
+          "$RUNNER_TEMP/cr-upstream-key" "$RUNNER_TEMP/cr-excluded.json" \
           "$RUNNER_TEMP/policy-block.json" \
           "$RUNNER_TEMP/pr.diff" "$RUNNER_TEMP/diff-guard.json" "$RUNNER_TEMP/prev-summary.md" \
           "$RUNNER_TEMP/wallclock-timeout" "$RUNNER_TEMP/judge-unavailable" \
           "$RUNNER_TEMP/cr-usage.jsonl" \
-          "$RUNNER_TEMP/cr-clean" \
+          "$RUNNER_TEMP/cr-clean" "$RUNNER_TEMP/cr-identity" "$RUNNER_TEMP/cr-lockfiles.json" \
           "$RUNNER_TEMP/result.l1.json" "$RUNNER_TEMP/result.l2.json" \
           "$RUNNER_TEMP/result-extra.l1.json" "$RUNNER_TEMP/result-extra.l2.json" \
           "$RUNNER_TEMP/result.l2.log" "$RUNNER_TEMP/result-extra.l2.log"
+        rm -rf "$RUNNER_TEMP/ocr-engine"
 
+    # Which event this is, whether the action acts on it at all, and the PR it
+    # is about. `run` is the verdict every later step is gated on.
+    #
+    # IT RUNS ON AN ALLOWLIST OF EVENTS: pull_request / pull_request_target
+    # (opened, synchronize, reopened, ready_for_review, edited) and issue_comment
+    # (created). Anything else — a review, a review comment, a push, a label — is
+    # a successful no-op that says why.
+    #
+    # THE ACTION CHECKS A COMMENT TRIGGER ITSELF. The shipped workflows gate the
+    # /orcacode-review command in their `if:`, but a workflow written by hand
+    # (or the bare `uses:` a quickstart shows) may not, and then ANY comment by
+    # ANYONE would run a paid review with the key. So an issue_comment run is
+    # refused unless it is on a pull request, the comment is the review command,
+    # and the commenter is OWNER, MEMBER or COLLABORATOR. A refusal is a quiet
+    # no-op (run=false), not a failure: nothing was spent and nothing attaches
+    # to the PR. An `edited` PR event runs only when the BASE changed (a
+    # retarget re-reviews against the new base; a title edit does not).
     - name: Resolve PR refs
       id: pr
-      uses: actions/github-script@v7
+      uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+      env:
+        IDENTITY: ${{ github.action_path }}/scripts/identity.mjs
+        BRAND: ${{ inputs.brand }}
+        # A refused fork-PR command is answered with a comment, through the one
+        # posting funnel like everything else the action posts.
+        PUBLISH_GUARD: ${{ github.action_path }}/scripts/publish-guard.mjs
+        CR_REDACT_API_KEY: ${{ inputs.orcarouter-api-key }}
+        CR_REDACT_GITHUB_TOKEN: ${{ inputs.github-token }}
+        BOT_LOGIN_INPUT: ${{ inputs.bot-login }}
+        # "true" when github-token is the job's own GITHUB_TOKEN — the one
+        # installation token whose author (github-actions[bot]) is known.
+        TOKEN_IS_JOB_TOKEN: ${{ inputs.github-token == github.token }}
       with:
         github-token: ${{ inputs.github-token }}
         script: |
-          let base, headSha, num, isDraft, authorAssoc;
+          const COMMANDS = ['/orcacode-review', '/orcacode review', '@orcacode-review', '@orcacode review'];
+          const TRUSTED = ['OWNER', 'MEMBER', 'COLLABORATOR'];
+          const payload = context.payload || {};
+          const stop = (why) => {
+            core.setOutput('run', 'false');
+            core.setOutput('stop_reason', why);
+            core.notice(`OrcaCode Review: not running — ${why}.`);
+          };
+          // THE EVENTS THE ACTION RUNS ON — an allowlist. Anything that was not
+          // an issue_comment used to fall into the pull_request* auto-review
+          // gate, which is keyed on the PR's AUTHOR: a workflow listening to
+          // pull_request_review(_comment) ran a paid review on a maintainer's
+          // PR whenever anyone left a review comment. Everything else is a
+          // successful no-op that says why.
+          const PR_ACTIONS = ['opened', 'synchronize', 'reopened', 'ready_for_review', 'edited'];
+          const ALLOWED_EVENTS = {
+            pull_request: PR_ACTIONS,
+            pull_request_target: PR_ACTIONS,
+            issue_comment: ['created'],
+          };
+          const allowed = Object.prototype.hasOwnProperty.call(ALLOWED_EVENTS, context.eventName)
+            ? ALLOWED_EVENTS[context.eventName] : null;
+          if (!allowed || !allowed.includes(payload.action)) {
+            return stop(
+              `it does not run on ${context.eventName}${payload.action ? ` (${payload.action})` : ''} — only on ` +
+              `pull_request / pull_request_target (${PR_ACTIONS.join(', ')}) and issue_comment (created)`,
+            );
+          }
+          let commandArg = '';
+          if (context.eventName === 'issue_comment') {
+            const c = payload.comment || {};
+            const body = String(c.body || '').toLowerCase();
+            const assoc = String(c.author_association || 'NONE').toUpperCase();
+            // The command, then the end of the comment or whitespace — so
+            // "/orcacode-reviewer" is not the command.
+            const used = COMMANDS.find((cmd) => body.startsWith(cmd) && /^(\s|$)/.test(body.slice(cmd.length)));
+            const isCommand = Boolean(used);
+            // The word after it: the commit a fork PR's command must name.
+            if (used) commandArg = body.slice(used.length).trim().split(/\s+/)[0] || '';
+            if (!payload.issue || !payload.issue.pull_request) return stop('the comment is not on a pull request');
+            if (!isCommand) return stop('the comment is not the review command');
+            if (!TRUSTED.includes(assoc)) {
+              return stop(`only OWNER, MEMBER or COLLABORATOR may request a review (commenter is ${assoc})`);
+            }
+          } else if (payload.action === 'edited' && !(payload.changes && payload.changes.base)) {
+            return stop('the pull request was edited without changing its base');
+          }
+
+          let base, headSha, num, isDraft, authorAssoc, prData;
           if (context.eventName === 'pull_request_target') {
-            base = context.payload.pull_request.base.ref;
-            headSha = context.payload.pull_request.head.sha;
-            num = context.payload.pull_request.number;
-            isDraft = context.payload.pull_request.draft === true;
-            authorAssoc = context.payload.pull_request.author_association || 'NONE';
+            prData = payload.pull_request;
+            base = payload.pull_request.base.ref;
+            headSha = payload.pull_request.head.sha;
+            num = payload.pull_request.number;
+            isDraft = payload.pull_request.draft === true;
+            authorAssoc = payload.pull_request.author_association || 'NONE';
           } else {
             num = context.issue.number;
             const { data: pr } = await github.rest.pulls.get({
               owner: context.repo.owner, repo: context.repo.repo, pull_number: num,
             });
+            prData = pr;
             base = pr.base.ref; headSha = pr.head.sha;
             isDraft = pr.draft === true;
             authorAssoc = pr.author_association || 'NONE';
           }
+          const headRepo = prData && prData.head && prData.head.repo ? prData.head.repo.full_name : null;
+          const baseRepo = `${context.repo.owner}/${context.repo.repo}`;
+          const fromFork = String(headRepo || '').toLowerCase() !== baseRepo.toLowerCase();
+
+          // A COMMAND REVIEWS THE COMMIT THE MAINTAINER SAW. A fork's owner can
+          // push between a maintainer reading the change and the run starting,
+          // so on a fork PR the command must name the head commit
+          // (`/orcacode-review <sha, 7+ hex>`), and it is reviewed only while it
+          // is still the head — the checkout below pins that exact SHA. A
+          // same-repository PR keeps the bare command; a commit it names is held
+          // to the same check. A refusal answers on the PR and runs nothing.
+          if (context.eventName === 'issue_comment') {
+            const named = /^[0-9a-f]{7,40}$/.test(commandArg) ? commandArg : '';
+            const now = String(headSha).slice(0, 7);
+            let refusal = '';
+            let why = '';
+            if (fromFork && !named) {
+              why = 'the pull request comes from a fork, and the command did not name the commit to review';
+              refusal =
+                `This pull request's head is in another repository (a fork), so a review on demand has to ` +
+                `name the commit it is for — the fork can push between your comment and the review.\n\n` +
+                `The head is now \`${now}\`. Check that it is the code you mean, then comment:\n\n` +
+                `\`/orcacode-review ${now}\``;
+            } else if (named && !String(headSha).toLowerCase().startsWith(named)) {
+              why = `the command named ${named}, which is no longer the pull request's head (${now})`;
+              refusal =
+                `\`/orcacode-review ${named}\` names a commit that is no longer this pull request's head, so ` +
+                `nothing was reviewed. The head is now \`${now}\`. Check the new commits, then comment:\n\n` +
+                `\`/orcacode-review ${now}\``;
+            }
+            if (refusal) {
+              try {
+                const guard = await import(require('url').pathToFileURL(process.env.PUBLISH_GUARD).href);
+                await guard.guardGithub(github).rest.issues.createComment({
+                  owner: context.repo.owner, repo: context.repo.repo, issue_number: num,
+                  body: `## 🐳 ${process.env.BRAND || 'OrcaCode Review'}\n\n${refusal}`,
+                });
+              } catch (e) {
+                core.warning(`OrcaCode Review: could not post the refusal (${e.status || e.message}).`);
+              }
+              return stop(why);
+            }
+          }
+          core.setOutput('run', 'true');
+
+          // THE AUTHOR IS NOT THE PUSHER. author_association is the PR author's,
+          // so on a maintainer's PR whose head lives in an outsider's fork every
+          // push the outsider makes passes the author gate. On `synchronize`
+          // from a fork, when someone other than the author pushed, ask GitHub
+          // whether THEY can write here; the settings gate auto-reviews only if
+          // so (unless auto-review-authors lets everyone through anyway).
+          // "n/a" = nothing to ask; "false" also when GitHub cannot say.
+          let pusher = '';
+          let pusherTrusted = 'n/a';
+          const author = prData && prData.user ? prData.user.login : '';
+          const sender = payload.sender ? payload.sender.login : '';
+          if (context.eventName !== 'issue_comment' && payload.action === 'synchronize' && fromFork && sender !== author) {
+            pusher = sender || '(unknown)';
+            pusherTrusted = 'false';
+            if (sender) {
+              try {
+                const { data: level } = await github.rest.repos.getCollaboratorPermissionLevel({
+                  owner: context.repo.owner, repo: context.repo.repo, username: sender,
+                });
+                const can = ['admin', 'maintain', 'write'];
+                if (can.includes(level.permission) || can.includes(level.role_name)) pusherTrusted = 'true';
+              } catch (e) {
+                core.warning(`OrcaCode Review: could not read ${sender}'s permission on this repository (${e.status || e.message}) — treating the push as untrusted.`);
+              }
+            }
+          }
+          core.setOutput('pusher', pusher);
+          core.setOutput('pusher_trusted', pusherTrusted);
+          // WHO THE ACTION POSTS AS — scripts/identity.mjs, the one funnel. The
+          // marker lookups in later steps (<!-- orca-code-review-* -->) only
+          // count a comment this identity wrote. Never a guess: an App token
+          // that is not the job's own is "unknown" until the action's first
+          // post in this run reports its author (or bot-login names it).
+          const identity = await import(require('url').pathToFileURL(process.env.IDENTITY).href);
+          const me = await identity.resolveIdentity({
+            github,
+            botLogin: process.env.BOT_LOGIN_INPUT,
+            tokenIsJobToken: process.env.TOKEN_IS_JOB_TOKEN === 'true',
+          });
+          if (!me.login) {
+            core.notice(
+              'OrcaCode Review: github-token is an App installation token that is not this job\'s own, and ' +
+              'bot-login is not set — the action will learn its identity from its first post in this run, ' +
+              'so a notice from an earlier run is posted again rather than edited. Set bot-login: "<app>[bot]".',
+            );
+          }
+          core.setOutput('bot_login', me.login);
           core.setOutput('base', base);
           core.setOutput('head_sha', headSha);
           core.setOutput('number', String(num));
@@ -291,10 +521,12 @@ runs:
           core.setOutput('is_draft', String(isDraft));
           // PR author's association gates auto-review spend on public repos:
           // pull_request_target bypasses GitHub's fork-approval gate, so the
-          // `auto-review-authors` allowlist can restrict which associations
-          // trigger a paid auto-review (comment commands stay maintainer-gated
-          // in the workflow `if:`).
+          // `auto-review-authors` allowlist restricts which associations
+          // trigger a paid auto-review.
           core.setOutput('author_association', authorAssoc);
+          // "true" only for a repository the payload says is private; anything
+          // else (public, or no answer) is treated as public by every consumer.
+          core.setOutput('repo_private', String((payload.repository || {}).private === true));
 
 
     # Lightweight 👀 acknowledgement so the requester sees the bot noticed the
@@ -303,6 +535,7 @@ runs:
     # Reaction outages are non-fatal: the review must never be blocked by a
     # UI-affordance failure.
     - name: React 👀 to acknowledge review request
+      if: steps.pr.outputs.run == 'true'
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
@@ -319,7 +552,7 @@ runs:
         # Checked once here rather than inside react(), so a token that cannot be
         # identified costs one API call, not two.
         # ONLY AN EXPLICIT "User" DECLINES. `gh api user` needs a user-scoped
-        # token, and github-token defaults to ${{ github.token }} — an
+        # token, and github-token defaults to the job's github.token — an
         # installation token, for which that endpoint returns no user. The old
         # `|| echo "Bot"` fallback was meant to cover that and did not: the call
         # can exit 0 with no `.type`, so ME_TYPE came back empty, `!= "Bot"` held,
@@ -370,19 +603,26 @@ runs:
 
     # setup-node runs BEFORE checkout (it never reads the workspace) so the
     # settings fetch below has node available even on a bare self-hosted runner.
-    - uses: actions/setup-node@v4
+    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      if: steps.pr.outputs.run == 'true'
       with:
         node-version: "20"
 
     # Dashboard-driven behavior, fetched from the gateway BEFORE anything is
     # cloned or installed: a settings-skip should cost nothing. settings.mjs
-    # always exits 0 and falls back to the built-in defaults on any outage
-    # (fail-open — a settings hiccup must never kill reviews); this step's own
-    # parsing falls back the same way, so `decision` is always review|skip.
+    # always exits 0 and says why when it could not fetch: "no_settings" (a 4xx
+    # — an ordinary, non-CI key gets 403 on every run) or "unavailable" (5xx,
+    # timeout, network). Either way THE WORKFLOW'S INPUTS are used for the run,
+    # exactly as with `settings: "false"`, and never anything stricter: the
+    # workflow's block-on is the outage floor (README, SECURITY.md).
     - name: Fetch review settings
       id: settings
+      if: steps.pr.outputs.run == 'true'
       shell: bash
       env:
+        # The one judge of where the key may go (https, or http to this
+        # machine), asked before anything sends it.
+        GATEWAY_URL_CHECK: ${{ github.action_path }}/scripts/gateway-url.mjs
         SETTINGS_SCRIPT: ${{ github.action_path }}/scripts/settings.mjs
         SETTINGS_ENABLED: ${{ inputs.settings }}
         ORCAROUTER_URL: ${{ inputs.orcarouter-url }}
@@ -396,7 +636,20 @@ runs:
         IS_DRAFT: ${{ steps.pr.outputs.is_draft }}
         AUTHOR_ASSOC: ${{ steps.pr.outputs.author_association }}
         AUTO_REVIEW_AUTHORS: ${{ inputs.auto-review-authors }}
+        REPO_PRIVATE: ${{ steps.pr.outputs.repo_private }}
+        # Who pushed to a fork PR, if not its author, and whether they can
+        # write here (Resolve PR refs): "true", "false", or "n/a".
+        PUSHER: ${{ steps.pr.outputs.pusher }}
+        PUSHER_TRUSTED: ${{ steps.pr.outputs.pusher_trusted }}
+        BRAND: ${{ inputs.brand }}
       run: |
+        # THE FIRST STEP THAT READS orcarouter-url judges it, for every run: the
+        # key would go there as a Bearer header (this fetch, the review proxy,
+        # the run report), and in clear it may go only to this machine. A
+        # refusal names the input and the fix (scripts/gateway-url.mjs).
+        # (`:?` — an unset path must fail, not run `node ""`, which exits 0.)
+        node "${GATEWAY_URL_CHECK:?}" || exit 1
+
         # The auto-event gate is defined UP FRONT — before the settings-disabled
         # short-circuit — so BOTH the settings-disabled (workflow-file-
         # authoritative) and settings-enabled (dashboard) paths share the exact
@@ -410,13 +663,14 @@ runs:
         # code). Both sides are space-trimmed the way the JS list parsers are,
         # so "OWNER, MEMBER" still anchors on ",MEMBER,"; the comma wrapping
         # keeps the match a whole-token one (MEMBER never matches inside
-        # FIRST_TIME_CONTRIBUTOR). An empty (or all-space) allowlist allows
-        # everyone (default, preserves behavior). echoes allow|deny.
+        # FIRST_TIME_CONTRIBUTOR). "*" (and, for this pure function, an empty
+        # list) allows everyone; what an UNSET input means is decided in
+        # gate_decision, by repository visibility. echoes allow|deny.
         author_allowed() {
           local list assoc
           list=$(printf '%s' "$1" | tr -d ' ')
           assoc=$(printf '%s' "$2" | tr -d ' ')
-          if [ -z "$list" ]; then echo allow; return; fi
+          if [ -z "$list" ] || [ "$list" = "*" ]; then echo allow; return; fi
           if printf '%s' ",$list," | grep -qi ",$assoc,"; then echo allow; else echo deny; fi
         }
 
@@ -432,6 +686,15 @@ runs:
         gate_decision() {
           DECISION=review
           REASON=""
+          # UNSET auto-review-authors is not "everyone" on a public repository:
+          # there any outsider's fork PR would spend the workspace's wallet, so
+          # it means the maintainers. Private repos keep "everyone". "*" is the
+          # explicit opt-out. Unknown visibility counts as public.
+          local authors
+          authors=$(printf '%s' "$AUTO_REVIEW_AUTHORS" | tr -d ' ')
+          if [ -z "$authors" ]; then
+            if [ "${REPO_PRIVATE:-}" = "true" ]; then authors="*"; else authors="OWNER,MEMBER,COLLABORATOR"; fi
+          fi
           case "$EVENT_NAME" in
             pull_request*)
               if [ "$1" = "false" ]; then
@@ -440,27 +703,33 @@ runs:
                 DECISION=skip; REASON="on-demand mode"
               elif [ "$2" = "ready_for_review" ] && [ "$3" = "true" ]; then
                 DECISION=skip; REASON="draft PR"
-              elif [ "$(author_allowed "$AUTO_REVIEW_AUTHORS" "$AUTHOR_ASSOC")" = deny ]; then
-                # Maintainer comment commands are unaffected (gated in the workflow `if:`).
-                DECISION=skip; REASON="author association $AUTHOR_ASSOC not in auto-review-authors"
+              elif [ "$(author_allowed "$authors" "$AUTHOR_ASSOC")" = deny ]; then
+                # Maintainer comment commands are unaffected (gated in the
+                # Resolve PR refs step and the workflow `if:`).
+                DECISION=skip; REASON="author association $AUTHOR_ASSOC not in auto-review-authors ($authors)"
+              elif [ "${PUSHER_TRUSTED:-}" = "false" ] && [ "$authors" != "*" ]; then
+                # The author passed, but someone else pushed this head into a
+                # fork PR and cannot write here. Where the allowlist lets
+                # everyone through, they could have opened a PR of their own.
+                DECISION=skip; REASON="pushed to a fork PR by ${PUSHER:-someone} without write access to this repository (auto-review-authors gates the pusher too)"
               fi
               ;;
           esac
         }
 
-        # `settings: "false"` makes the workflow FILE authoritative: skip the
-        # fetch entirely, so inputs (or their documented defaults) apply as-is
-        # and no dashboard value can override them. (With the fetch on, an
-        # input left AT its documented default defers to the server — see the
-        # precedence rule below — so e.g. a deliberate `block-on: "P0,P1"` pin
-        # could still be overridden from the dashboard.) auto_review/trigger are
-        # fixed on (true/every_push) in this mode, so gate_decision can only skip
-        # via the author allowlist — a fork author still can't spend on a public
-        # repo just because the dashboard fetch is off.
-        if [ "$SETTINGS_ENABLED" = "false" ]; then
-          echo "settings: disabled via the 'settings' input — the workflow file is authoritative."
+        # THE WORKFLOW FILE AS THE WHOLE CONFIGURATION: inputs (or their
+        # documented defaults) apply as-is and no dashboard value overrides them.
+        # Used by `settings: "false"`, and by a fetch that got no settings — a
+        # 4xx or an outage — so a run without dashboard values behaves exactly
+        # like one that asked for none. (With the fetch on and answered, an input
+        # left AT its documented default defers to the server — see the
+        # precedence rule below.) auto_review/trigger are fixed on
+        # (true/every_push) here, so gate_decision can only skip via the author
+        # allowlist — a fork author still can't spend on a public repo just
+        # because the dashboard did not answer.  $1 = why, for the log.
+        workflow_authoritative() {
           gate_decision true every_push false
-          echo "settings: workflow-file-authoritative -> $DECISION ${REASON:+($REASON)}"
+          echo "settings: workflow-file-authoritative ($1) -> $DECISION ${REASON:+($REASON)}"
           {
             echo "auto_review=true"
             echo "trigger=every_push"
@@ -468,7 +737,7 @@ runs:
             echo "quiet=false"
             echo "fix_first=$INPUT_FIX_FIRST"
             echo "block_on=$INPUT_BLOCK_ON"
-            # Every severity: with the dashboard off there is no report_on to
+            # Every severity: with no dashboard value there is no report_on to
             # honour and the workflow file has no input for it, so display must
             # not narrow on its own.
             echo "report_on=P0,P1,P2,P3"
@@ -476,11 +745,43 @@ runs:
             echo "decision=$DECISION"
             echo "reason=$REASON"
           } >> "$GITHUB_OUTPUT"
+        }
+
+        if [ "$SETTINGS_ENABLED" = "false" ]; then
+          echo "settings: disabled via the 'settings' input — the workflow file is authoritative."
+          workflow_authoritative "settings: false"
           exit 0
         fi
 
         node "$SETTINGS_SCRIPT" --url "$ORCAROUTER_URL" \
           --repo "$REPO" --out "$SETTINGS_JSON"
+
+        # Did the fetch get settings? settings.mjs classifies a failure; a file
+        # it could not write at all is an outage too.
+        FETCH_STATUS=$(node -pe 'JSON.parse(require("fs").readFileSync(process.env.SETTINGS_JSON, "utf8")).status || "ok"' 2>/dev/null) \
+          || FETCH_STATUS="unavailable"
+        FETCH_CAUSE=$(node -pe 'String(JSON.parse(require("fs").readFileSync(process.env.SETTINGS_JSON, "utf8")).cause || "")' 2>/dev/null) \
+          || FETCH_CAUSE="settings.mjs wrote no readable settings file"
+        case "$FETCH_STATUS" in
+          ok) ;;
+          no_settings)
+            # ORDINARY, not an outage: a key that is not a CI key has no
+            # dashboard settings and gets a 4xx on every run.
+            echo "::notice::$BRAND: the OrcaRouter dashboard has no settings for this key ($FETCH_CAUSE) — using this workflow's inputs, as with settings: \"false\" (set that to skip the fetch)."
+            workflow_authoritative "no dashboard settings: $FETCH_CAUSE"
+            exit 0
+            ;;
+          *)
+            # AN OUTAGE NEVER ESCALATES PAST THE WORKFLOW. Blocking on every
+            # severity here (the first cut of the CR-16 fix) blocked every run of
+            # every key the endpoint refuses. The hole CR-16 named — an outage
+            # loosening a stricter dashboard block_on — is closed by the
+            # workflow: its block-on is the outage floor, documented as such.
+            echo "::warning::$BRAND: the OrcaRouter dashboard settings could not be read ($FETCH_CAUSE) — using this workflow's inputs for this run. Its block-on (\"$INPUT_BLOCK_ON\") is the outage floor: set block-on in the workflow to what the dashboard enforces."
+            workflow_authoritative "dashboard unavailable: $FETCH_CAUSE"
+            exit 0
+            ;;
+        esac
 
         # Read one validated field from the settings file; $2 is the fallback
         # if the file itself is missing/unreadable (settings.mjs already
@@ -507,11 +808,23 @@ runs:
         REPORT_ON=$(setting report_on "P0,P1")
         RUBRIC=$(setting rubric "")
 
+        # Which values are stand-ins for ones the dashboard did not give us
+        # (a field it answered with an invalid value): settings.mjs names them.
+        UNRESOLVED=$(node -pe 'const s=JSON.parse(require("fs").readFileSync(process.env.SETTINGS_JSON,"utf8")); (Array.isArray(s.unresolved)?s.unresolved:[]).join(",")' 2>/dev/null) \
+          || UNRESOLVED=""
+
         # PRECEDENCE (documented in the README): an explicit `with:` input that
         # DIFFERS from the action's documented default ("P0,P1") wins over the
         # server settings; an input left at the default defers to the server.
         if [ "$INPUT_FIX_FIRST" != "P0,P1" ]; then FIX_FIRST="$INPUT_FIX_FIRST"; fi
-        if [ "$INPUT_BLOCK_ON" != "P0,P1" ]; then BLOCK_ON="$INPUT_BLOCK_ON"; fi
+        if [ "$INPUT_BLOCK_ON" != "P0,P1" ]; then
+          BLOCK_ON="$INPUT_BLOCK_ON"
+        elif printf ',%s,' "$UNRESOLVED" | grep -q ',block_on,'; then
+          # The dashboard answered, but not with a usable block_on: the
+          # workflow's own value stands in, never a guess stricter or looser.
+          BLOCK_ON="$INPUT_BLOCK_ON"
+          echo "::warning::$BRAND: the OrcaRouter dashboard's block_on was not a valid severity list — using this workflow's block-on (\"$INPUT_BLOCK_ON\") for this run."
+        fi
 
         # A non-empty server rubric REPLACES rules/severity-instruction.md as
         # the --background content; it is exposed as a file path only when set.
@@ -522,7 +835,7 @@ runs:
           echo "Using the server-side rubric ($(wc -c < "$RUBRIC_FILE") bytes) instead of the built-in one."
         fi
 
-        # Settings gate — composable with the diff guard's `decision != 'skip'`.
+        # Settings gate — composable with the diff guard's `decision == 'review'`.
         # Same gate_decision as the settings-disabled path (defined at the top of
         # this step): the dashboard-fetched auto_review/trigger feed it here,
         # while the author-allowlist spend guard inside it is identical in both
@@ -544,21 +857,54 @@ runs:
 
     # On a settings-skip: leave ONE small marker comment (created if absent,
     # edited only when the reason changes — repeated pushes must not spam the
-    # timeline or its edit history), then PASS. No later step runs the engine
-    # or the gate, so the job (and a required check) goes green.
+    # timeline or its edit history), then apply `on-skipped-review` to the JOB.
+    # No later step runs the engine or the gate either way. Default "pass": the
+    # job stays green, as in every earlier release; the commit status on the
+    # head (Publish the review status) says "Not reviewed", which is what holds
+    # a merge for a customer who requires it. "fail" fails the job too.
     - name: Skip review (settings)
       if: steps.settings.outputs.decision == 'skip'
-      uses: actions/github-script@v7
+      uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
       env:
+        # Only comments this identity wrote count as the action's own (markers).
+        BOT_LOGIN: ${{ steps.pr.outputs.bot_login }}
         BRAND: ${{ inputs.brand }}
         PR_NUMBER: ${{ steps.pr.outputs.number }}
         REASON: ${{ steps.settings.outputs.reason }}
+        ON_SKIPPED: ${{ inputs.on-skipped-review }}
+        # Named in the notice when it is on: the status that reports the skip.
+        STATUS_CONTEXT: ${{ inputs.status-context }}
+        # Every post goes through scripts/publish-guard.mjs: `gh` redacts these
+        # two values (in every encoding) from whatever it sends.
+        PUBLISH_GUARD: ${{ github.action_path }}/scripts/publish-guard.mjs
+        CR_REDACT_API_KEY: ${{ inputs.orcarouter-api-key }}
+        CR_REDACT_GITHUB_TOKEN: ${{ inputs.github-token }}
       with:
         github-token: ${{ inputs.github-token }}
         script: |
+          // THE ONE POSTING FUNNEL (scripts/publish-guard.mjs): every comment,
+          // review, description and status goes out through `gh`, which redacts
+          // the OrcaRouter key and the GitHub token from what it sends.
+          const guard = await import(require('url').pathToFileURL(process.env.PUBLISH_GUARD).href);
+          const gh = guard.guardGithub(github);
+          // A marker counts only in a comment the action's own identity wrote
+          // (guard.isOwn — scripts/identity.mjs). Unknown identity matches
+          // nothing: post anew, edit and delete nothing.
+          const mine = guard.isOwn;
           const brand = process.env.BRAND;
           const num = Number(process.env.PR_NUMBER);
           const repo = { owner: context.repo.owner, repo: context.repo.repo };
+          // The JOB fails only on an explicit "fail"; the default and any other
+          // value pass it, as every earlier release did. What protects a merge
+          // is the commit status, which reports every settings skip as "Not
+          // reviewed" (scripts/review-status.mjs) — a skip that failed jobs by
+          // default turned on-demand, draft and outsider PRs red for everyone.
+          const onSkipped = String(process.env.ON_SKIPPED || '').trim().toLowerCase();
+          const fail = onSkipped === 'fail';
+          if (onSkipped && onSkipped !== 'pass' && !fail) {
+            core.warning(`${brand}: on-skipped-review is "${process.env.ON_SKIPPED}", which is neither "pass" nor "fail" — passing the job.`);
+          }
+          const statusName = String(process.env.STATUS_CONTEXT || '').trim();
           // Own marker (distinct from the summary and oversized-skip ones).
           const MARKER = '<!-- orca-code-review-disabled -->';
           const footer =
@@ -566,29 +912,42 @@ runs:
             `Route Smarter. Ship Safer. Spend Less.</sub>`;
           const body =
             `${MARKER}\n## 🐳 ${brand}\n\n` +
-            `⏸️ **Automatic review is off for this PR** (${process.env.REASON}).\n\n` +
-            `The check **passes** — this never blocks your merge. A maintainer can still ` +
-            `run a review on demand by commenting \`/orcacode-review\` ` +
-            `(\`@orcacode review\` works too), or change the ` +
+            `⏸️ **Automatic review is off for this PR** (${guard.sanitizeUntrusted(process.env.REASON, { atLineStart: false, maxChars: 300 })}).\n\n` +
+            (fail
+              ? `The check **fails** (\`on-skipped-review: "fail"\`): this PR has not been reviewed. `
+              : `This skip does not fail the job. `) +
+            (statusName
+              ? `The ${guard.codeSpan(statusName, 100)} commit status on the head commit reports it as ` +
+                `**not reviewed**, so a branch rule that requires that status holds the merge until a review runs. `
+              : '') +
+            `A maintainer can run a review on demand by commenting \`/orcacode-review\` ` +
+            `(\`@orcacode review\` works too) — its verdict replaces this one — or change the ` +
             `repo's review settings in the OrcaRouter dashboard.` +
             footer;
 
           const comments = await github.paginate(github.rest.issues.listComments, {
             ...repo, issue_number: num, per_page: 100,
           });
-          const existing = comments.find((c) => c.body && c.body.includes(MARKER));
+          const existing = comments.find((c) => mine(c) && c.body.includes(MARKER));
           if (!existing) {
-            await github.rest.issues.createComment({ ...repo, issue_number: num, body });
+            await gh.rest.issues.createComment({ ...repo, issue_number: num, body });
           } else if (existing.body !== body) {
             // Only when the reason changed (e.g. on_demand -> draft).
-            await github.rest.issues.updateComment({ ...repo, comment_id: existing.id, body });
+            await gh.rest.issues.updateComment({ ...repo, comment_id: existing.id, body });
           }
 
           await core.summary.addRaw(`skipped: ${process.env.REASON}`).write();
-          core.notice(`${brand}: review skipped — ${process.env.REASON}`);
+          if (!fail) {
+            core.notice(`${brand}: review skipped — ${process.env.REASON}`);
+          } else {
+            core.setFailed(
+              `${brand}: review skipped — ${process.env.REASON}. Failing the job (on-skipped-review: "fail"): ` +
+              `a maintainer can comment /orcacode-review to review the head.`,
+            );
+          }
 
-    - uses: actions/checkout@v4
-      if: steps.settings.outputs.decision != 'skip'
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      if: steps.settings.outputs.decision == 'review'
       with:
         fetch-depth: 0 # full history for the merge-base diff
         ref: ${{ steps.pr.outputs.head_sha }}
@@ -598,27 +957,55 @@ runs:
         persist-credentials: false
 
     - name: Fetch PR head (covers fork PRs)
-      if: steps.settings.outputs.decision != 'skip'
+      if: steps.settings.outputs.decision == 'review'
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
         PR_NUMBER: ${{ steps.pr.outputs.number }}
       run: |
-        # Authenticate this one fetch with a command-scoped header (works for
-        # private repos) so the token is never written to disk for later steps.
+        # Authenticate this one fetch (works for private repos) without writing
+        # the token to disk for later steps AND without putting it on git's
+        # command line: `git -c http.extraheader=…` is argv, which any process
+        # on a shared runner can read from /proc/<pid>/cmdline or `ps`. The
+        # GIT_CONFIG_COUNT/KEY/VALUE environment form (git >= 2.31) carries the
+        # same config through the environment instead, and the header is scoped
+        # to the server's URL so it cannot follow a redirect elsewhere.
         AUTH=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
-        git -c "http.extraheader=Authorization: Basic $AUTH" \
-          fetch origin "pull/${PR_NUMBER}/head"
+        GIT_CONFIG_COUNT=1 \
+        GIT_CONFIG_KEY_0="http.${GITHUB_SERVER_URL:-https://github.com}/.extraheader" \
+        GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $AUTH" \
+          git fetch origin "pull/${PR_NUMBER}/head"
+
+    # BEFORE ANYTHING READS THE CHECKOUT (the size guard below, then the
+    # engine): delete every symlink, take the `diff` attribute away from the
+    # PR's .gitattributes, drop PR-controlled engine config and restore the base
+    # revision's .gitignore — see scripts/harden-checkout.mjs. Then list the
+    # changed files the engine will skip, for the summary.
+    - name: Harden the checkout
+      id: harden
+      if: steps.settings.outputs.decision == 'review'
+      shell: bash
+      env:
+        HARDEN: ${{ github.action_path }}/scripts/harden-checkout.mjs
+        EXCLUDED: ${{ github.action_path }}/scripts/excluded-files.mjs
+        BASE: origin/${{ steps.pr.outputs.base }}
+        HEAD: ${{ steps.pr.outputs.head_sha }}
+        EXCLUDED_FILE: ${{ runner.temp }}/cr-excluded.json
+      run: |
+        node "$HARDEN" --base "$BASE"
+        node "$EXCLUDED" --base "$BASE" --head "$HEAD" --out "$EXCLUDED_FILE" > /dev/null
 
     - name: Oversized-diff guard
       id: guard
-      if: steps.settings.outputs.decision != 'skip'
+      if: steps.settings.outputs.decision == 'review'
       shell: bash
       env:
         BRAND: ${{ inputs.brand }}
         BASE: origin/${{ steps.pr.outputs.base }}
         HEAD: ${{ steps.pr.outputs.head_sha }}
         GUARD: ${{ github.action_path }}/scripts/diff-guard.mjs
+        GUARD_DIFF: ${{ github.action_path }}/scripts/guard-diff.mjs
+        LOCKFILES_FILE: ${{ runner.temp }}/cr-lockfiles.json
         MAX_KB: ${{ inputs.max-diff-kb }}
         MAX_FILES: ${{ inputs.max-diff-files }}
         DIFF_FILE: ${{ runner.temp }}/pr.diff
@@ -626,20 +1013,24 @@ runs:
       run: |
         # Size-check the SAME range the engine reviews (merge-base diff),
         # BEFORE anything is installed or run: an oversized PR should cost
-        # nothing. `--merge-base` needs git >= 2.30; fall back to the
-        # equivalent three-dot form, then fail OPEN (empty file -> "review")
-        # if no diff can be produced — a guard glitch must never kill the job.
-        git diff --merge-base "$BASE" "$HEAD" > "$DIFF_FILE" 2>/dev/null \
-          || git diff "$BASE...$HEAD" > "$DIFF_FILE" 2>/dev/null \
-          || { echo "::warning::$BRAND: diff generation failed — size guard failing open."; : > "$DIFF_FILE"; }
+        # nothing — minus the files named like a standard lockfile, which the
+        # hardened checkout's `* !diff` would otherwise count in full (see
+        # scripts/guard-diff.mjs; they are listed in the summary). The engine
+        # still reads the full diff. Fails OPEN (empty file -> "review") if no
+        # diff can be produced — a guard glitch must never kill the job.
+        node "$GUARD_DIFF" --base "$BASE" --head "$HEAD" --out "$DIFF_FILE" --lockfiles "$LOCKFILES_FILE"
         node "$GUARD" --diff "$DIFF_FILE" --max-kb "$MAX_KB" --max-files "$MAX_FILES" > "$GUARD_JSON"
         cat "$GUARD_JSON"
         node -e '
           const fs = require("fs");
           const g = JSON.parse(fs.readFileSync(process.env.GUARD_JSON, "utf8"));
+          let lockfiles = 0;
+          try {
+            lockfiles = JSON.parse(fs.readFileSync(process.env.LOCKFILES_FILE, "utf8")).lockfiles.length;
+          } catch {}
           fs.appendFileSync(
             process.env.GITHUB_OUTPUT,
-            `decision=${g.decision}\nreason=${g.reason}\nsize_kb=${g.size_kb}\nfiles=${g.files}\n`,
+            `decision=${g.decision}\nreason=${g.reason}\nsize_kb=${g.size_kb}\nfiles=${g.files}\nlockfiles=${lockfiles}\n`,
           );
         '
 
@@ -651,8 +1042,10 @@ runs:
     # "pass" restores the advisory behavior (notice + green check).
     - name: Skip review (diff too large)
       if: steps.guard.outputs.decision == 'skip'
-      uses: actions/github-script@v7
+      uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
       env:
+        # Only comments this identity wrote count as the action's own (markers).
+        BOT_LOGIN: ${{ steps.pr.outputs.bot_login }}
         BRAND: ${{ inputs.brand }}
         PR_NUMBER: ${{ steps.pr.outputs.number }}
         SIZE_KB: ${{ steps.guard.outputs.size_kb }}
@@ -661,9 +1054,23 @@ runs:
         MAX_KB: ${{ inputs.max-diff-kb }}
         MAX_FILES: ${{ inputs.max-diff-files }}
         ON_OVERSIZED: ${{ inputs.on-oversized-diff }}
+        # Every post goes through scripts/publish-guard.mjs: `gh` redacts these
+        # two values (in every encoding) from whatever it sends.
+        PUBLISH_GUARD: ${{ github.action_path }}/scripts/publish-guard.mjs
+        CR_REDACT_API_KEY: ${{ inputs.orcarouter-api-key }}
+        CR_REDACT_GITHUB_TOKEN: ${{ inputs.github-token }}
       with:
         github-token: ${{ inputs.github-token }}
         script: |
+          // THE ONE POSTING FUNNEL (scripts/publish-guard.mjs): every comment,
+          // review, description and status goes out through `gh`, which redacts
+          // the OrcaRouter key and the GitHub token from what it sends.
+          const guard = await import(require('url').pathToFileURL(process.env.PUBLISH_GUARD).href);
+          const gh = guard.guardGithub(github);
+          // A marker counts only in a comment the action's own identity wrote
+          // (guard.isOwn — scripts/identity.mjs). Unknown identity matches
+          // nothing: post anew, edit and delete nothing.
+          const mine = guard.isOwn;
           const brand = process.env.BRAND;
           const num = Number(process.env.PR_NUMBER);
           const repo = { owner: context.repo.owner, repo: context.repo.repo };
@@ -682,10 +1089,10 @@ runs:
               `diff cannot slip through a required merge gate.`;
           const body =
             `${MARKER}\n## 🐳 ${brand}\n\n` +
-            `⏭️ **Review skipped — this PR's diff is too large** (${process.env.REASON}).\n\n` +
+            `⏭️ **Review skipped — this PR's diff is too large** (${guard.sanitizeUntrusted(process.env.REASON, { atLineStart: false, maxChars: 300 })}).\n\n` +
             `| | This PR | Limit |\n|---|---|---|\n` +
-            `| Diff size | ${process.env.SIZE_KB} KB | ${process.env.MAX_KB} KB |\n` +
-            `| Files touched | ${process.env.FILES} | ${process.env.MAX_FILES} |\n\n` +
+            `| Diff size | ${Number(process.env.SIZE_KB)} KB | ${Number(process.env.MAX_KB)} KB |\n` +
+            `| Files touched | ${Number(process.env.FILES)} | ${Number(process.env.MAX_FILES)} |\n\n` +
             `The review engine was **not** run — reviews of very large diffs truncate and ` +
             `lose signal — ${outcome}\n\n` +
             `**What now?** Split the PR (smaller diffs get much higher-signal reviews), raise ` +
@@ -696,11 +1103,11 @@ runs:
           const comments = await github.paginate(github.rest.issues.listComments, {
             ...repo, issue_number: num, per_page: 100,
           });
-          const existing = comments.find((c) => c.body && c.body.includes(MARKER));
+          const existing = comments.find((c) => mine(c) && c.body.includes(MARKER));
           if (existing) {
-            await github.rest.issues.updateComment({ ...repo, comment_id: existing.id, body });
+            await gh.rest.issues.updateComment({ ...repo, comment_id: existing.id, body });
           } else {
-            await github.rest.issues.createComment({ ...repo, issue_number: num, body });
+            await gh.rest.issues.createComment({ ...repo, issue_number: num, body });
           }
 
           await core.summary.addRaw(`skipped: diff too large (${process.env.REASON})`).write();
@@ -714,16 +1121,49 @@ runs:
             );
           }
 
+    # FROM PINNED, VERIFIED BYTES, WITH NO INSTALL SCRIPTS. A plain
+    # `npm install -g` pinned only the top-level version, ran the package's
+    # postinstall (which downloads the Go engine binary and checks it against a
+    # checksum file from the same release — no independent pin) and checked no
+    # integrity. scripts/install-engine.mjs verifies the npm tarball against
+    # the sha512 pinned in scripts/engine-pins.json, installs it with
+    # --ignore-scripts into a prefix under $RUNNER_TEMP, and verifies the
+    # binary against its pinned sha256. An engine-version without pins fails.
     - name: Install review engine
-      if: steps.settings.outputs.decision != 'skip' && steps.guard.outputs.decision != 'skip'
+      if: steps.settings.outputs.decision == 'review' && steps.guard.outputs.decision == 'review'
       shell: bash
       env:
         ENGINE_VERSION: ${{ inputs.engine-version }}
-      run: npm install -g "@alibaba-group/open-code-review@${ENGINE_VERSION}"
+        INSTALLER: ${{ github.action_path }}/scripts/install-engine.mjs
+        ENGINE_PREFIX: ${{ runner.temp }}/ocr-engine
+      run: |
+        ENGINE_BIN=$(node "$INSTALLER" --version "$ENGINE_VERSION" --prefix "$ENGINE_PREFIX")
+        echo "$ENGINE_BIN" >> "$GITHUB_PATH"
+
+    # THE KEY GOES TO THE PROXY, NEVER TO THE ENGINE. The engine reads the PR
+    # checkout — fork-controlled files written to steer an LLM agent — so
+    # anything it can read is one prompt injection away from a PR comment: its
+    # own environment, its parent shell's (/proc/<ppid>/environ is readable by
+    # the same user), or a file. So the Review step's env carries no secret at
+    # all. This step, which runs nothing from the PR, writes the key to a
+    # 0600 file; the proxy reads and UNLINKS it before it announces its URL,
+    # i.e. before the engine can start, and injects it on the way out. The
+    # engine and the judge only ever hold a placeholder.
+    - name: Stage the gateway key for the proxy
+      id: stage-key
+      if: steps.settings.outputs.decision == 'review' && steps.guard.outputs.decision == 'review'
+      shell: bash
+      env:
+        ORCAROUTER_API_KEY: ${{ inputs.orcarouter-api-key }}
+        UPSTREAM_KEY_FILE: ${{ runner.temp }}/cr-upstream-key
+      run: |
+        umask 077
+        rm -f "$UPSTREAM_KEY_FILE"
+        printf '%s' "$ORCAROUTER_API_KEY" > "$UPSTREAM_KEY_FILE"
 
     - name: Review
       id: review
-      if: steps.settings.outputs.decision != 'skip' && steps.guard.outputs.decision != 'skip'
+      if: steps.settings.outputs.decision == 'review' && steps.guard.outputs.decision == 'review'
       shell: bash
       env:
         ROUTER: ${{ inputs.router }}
@@ -759,6 +1199,7 @@ runs:
         GATE: ${{ github.action_path }}/scripts/gate.mjs
         CHECK: ${{ github.action_path }}/scripts/check-result.mjs
         PROXY: ${{ github.action_path }}/scripts/fact-proxy.mjs
+        HARDEN: ${{ github.action_path }}/scripts/harden-checkout.mjs
         BRAND: ${{ inputs.brand }}
         # The real OrcaRouter endpoint. OCR does NOT talk to it directly: the
         # in-job proxy stamps the routing facts as headers and forwards here.
@@ -767,7 +1208,11 @@ runs:
         # Nothing is written to the shared ~/.opencodereview, so we neither leak a
         # token to disk nor clobber a self-hosted runner's existing OCR config.
         # The model is the router alias; the router's DSL picks the real model.
-        OCR_LLM_TOKEN: ${{ inputs.orcarouter-api-key }}
+        #
+        # A PLACEHOLDER, not the key: the proxy replaces it with the real key
+        # (staged by the step above) on the way to the gateway. See there.
+        OCR_LLM_TOKEN: "placeholder-the-proxy-injects-the-key"
+        UPSTREAM_KEY_FILE: ${{ runner.temp }}/cr-upstream-key
         OCR_LLM_AUTH_HEADER: authorization
         OCR_LLM_MODEL: ${{ inputs.router }}
         OCR_USE_ANTHROPIC: "false"
@@ -805,8 +1250,10 @@ runs:
         # so never let PR-controlled config weaken the review. A fork could commit
         # `.opencodereview/rule.json` to exclude its own changed files or replace
         # the built-in checks, yielding an empty result that passes as
-        # clean. Drop it so OCR uses system defaults + our --background instruction.
-        rm -rf .opencodereview
+        # clean, or a symlink that points the engine's file tools outside the
+        # repository. The Harden step already did this; it runs again here, right
+        # before the engine, so nothing between the two can leave one behind.
+        node "$HARDEN" --base "$BASE" > /dev/null
 
         # Clear any stale block file before the proxy can write a fresh one. On a
         # self-hosted runner $RUNNER_TEMP may be reused, and the always()-step
@@ -827,9 +1274,15 @@ runs:
         CR_USAGE_FILE=""
         if [ "$METER" = "true" ]; then CR_USAGE_FILE="$USAGE_FILE"; fi
         export CR_USAGE_FILE
-        CR_FACTS_FILE="$FACTS_FILE" CR_POLICY_BLOCK_FILE="$POLICY_BLOCK" node "$PROXY" > "$RUNNER_TEMP/proxy.out" 2> "$RUNNER_TEMP/proxy.err" &
+        # The proxy reads the staged key file and unlinks it before printing
+        # PROXY_URL; the engine starts only after that line appears.
+        if [ ! -s "$UPSTREAM_KEY_FILE" ]; then
+          echo "::error::$BRAND: the gateway key was not staged for the proxy."; exit 1
+        fi
+        CR_UPSTREAM_KEY_FILE="$UPSTREAM_KEY_FILE" CR_FACTS_FILE="$FACTS_FILE" CR_POLICY_BLOCK_FILE="$POLICY_BLOCK" \
+          node "$PROXY" > "$RUNNER_TEMP/proxy.out" 2> "$RUNNER_TEMP/proxy.err" &
         PROXY_PID=$!
-        trap 'kill "$PROXY_PID" 2>/dev/null || true' EXIT
+        trap 'kill "$PROXY_PID" 2>/dev/null || true; rm -f "$UPSTREAM_KEY_FILE"' EXIT
         for _ in $(seq 1 50); do
           OCR_LLM_URL=$(sed -n 's/^PROXY_URL=//p' "$RUNNER_TEMP/proxy.out" 2>/dev/null || true)
           [ -n "$OCR_LLM_URL" ] && break
@@ -837,6 +1290,10 @@ runs:
         done
         if [ -z "$OCR_LLM_URL" ]; then
           echo "::error::$BRAND: fact proxy failed to start."; cat "$RUNNER_TEMP/proxy.err" || true; exit 1
+        fi
+        # Belt and braces: never start the engine while the key is on disk.
+        if [ -e "$UPSTREAM_KEY_FILE" ]; then
+          echo "::error::$BRAND: the staged gateway key is still on disk — refusing to start the engine."; exit 1
         fi
         export OCR_LLM_URL
 
@@ -1213,15 +1670,33 @@ runs:
     # The guard condition also keeps a STALE block file from being posted on a
     # skipped run (the review step's own cleanup never ran on a skip).
     - name: Surface guardrail / firewall block
-      if: always() && steps.settings.outputs.decision != 'skip' && steps.guard.outputs.decision != 'skip'
-      uses: actions/github-script@v7
+      if: always() && steps.settings.outputs.decision == 'review' && steps.guard.outputs.decision == 'review'
+      uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
       env:
+        # Only comments this identity wrote count as the action's own (markers).
+        BOT_LOGIN: ${{ steps.pr.outputs.bot_login }}
         BRAND: ${{ inputs.brand }}
         PR_NUMBER: ${{ steps.pr.outputs.number }}
         POLICY_BLOCK: ${{ runner.temp }}/policy-block.json
+        # "true" only on a private repository; anything else is treated as public.
+        REPO_PRIVATE: ${{ github.event.repository.private }}
+        # Every post goes through scripts/publish-guard.mjs: `gh` redacts these
+        # two values (in every encoding) from whatever it sends.
+        PUBLISH_GUARD: ${{ github.action_path }}/scripts/publish-guard.mjs
+        CR_REDACT_API_KEY: ${{ inputs.orcarouter-api-key }}
+        CR_REDACT_GITHUB_TOKEN: ${{ inputs.github-token }}
       with:
         github-token: ${{ inputs.github-token }}
         script: |
+          // THE ONE POSTING FUNNEL (scripts/publish-guard.mjs): every comment,
+          // review, description and status goes out through `gh`, which redacts
+          // the OrcaRouter key and the GitHub token from what it sends.
+          const guard = await import(require('url').pathToFileURL(process.env.PUBLISH_GUARD).href);
+          const gh = guard.guardGithub(github);
+          // A marker counts only in a comment the action's own identity wrote
+          // (guard.isOwn — scripts/identity.mjs). Unknown identity matches
+          // nothing: post anew, edit and delete nothing.
+          const mine = guard.isOwn;
           const fs = require('fs');
           let block;
           try {
@@ -1238,14 +1713,25 @@ runs:
           // it once a clean review posts.
           const MARKER = '<!-- orca-code-review-block -->';
           const layer = block.kind === 'firewall' ? 'firewall' : 'guardrail';
-          const policyLine = block.policyName
-            ? `\n\n**Policy:** \`${String(block.policyName).slice(0, 120)}\``
+          // ON A PUBLIC REPOSITORY THE NOTICE IS GENERIC. The policy's name and
+          // the text it matched describe the workspace's security configuration
+          // (and may quote what it caught); on a public PR anyone can read them,
+          // including the author probing which rule to evade. Private repos keep
+          // the detail, sanitised. Unknown visibility counts as public.
+          const isPrivate = process.env.REPO_PRIVATE === 'true';
+          const policyLine = isPrivate && block.policyName
+            ? `\n\n**Policy:** ${guard.codeSpan(block.policyName, 120)}`
             : '';
-          const detail = block.detail ? String(block.detail).slice(0, 300) : '';
+          const detail = isPrivate && block.detail
+            ? guard.sanitizeUntrusted(String(block.detail), { atLineStart: false, maxChars: 300 })
+            : '';
           const matchedLine = detail ? `\n\n**Matched:** ${detail}` : '';
-          const idTag = block.requestId
-            ? ` · request id \`${String(block.requestId).slice(0, 80)}\``
+          const idTag = isPrivate && block.requestId
+            ? ` · request id ${guard.codeSpan(block.requestId, 80)}`
             : '';
+          if (!isPrivate) {
+            console.log(`${layer} block (details withheld from the public PR; see the OrcaRouter dashboard)`);
+          }
           const footer =
             `\n\n<sub>[OrcaCode Review](https://www.orcarouter.ai/code-review) — ` +
             `Route Smarter. Ship Safer. Spend Less.${idTag}</sub>`;
@@ -1269,11 +1755,11 @@ runs:
           const existingComments = await github.paginate(github.rest.issues.listComments, {
             ...repo, issue_number: num, per_page: 100,
           });
-          const existing = existingComments.find((c) => c.body && c.body.includes(MARKER));
+          const existing = existingComments.find((c) => mine(c) && c.body.includes(MARKER));
           if (!existing) {
-            await github.rest.issues.createComment({ ...repo, issue_number: num, body });
+            await gh.rest.issues.createComment({ ...repo, issue_number: num, body });
           } else if (existing.body !== body) {
-            await github.rest.issues.updateComment({ ...repo, comment_id: existing.id, body });
+            await gh.rest.issues.updateComment({ ...repo, comment_id: existing.id, body });
           }
 
     # What gets POSTED is decoupled from what gets ENFORCED: this step always
@@ -1297,7 +1783,7 @@ runs:
     # THE SUMMARY IS DISPLAY, so it reads the filtered copy — it did not, and the
     # pinned description contradicted the review three lines below it.
     - name: report_on severity filter
-      if: steps.settings.outputs.decision != 'skip' && steps.guard.outputs.decision != 'skip'
+      if: steps.settings.outputs.decision == 'review' && steps.guard.outputs.decision == 'review'
       shell: bash
       env:
         REPORT_FILTER: ${{ github.action_path }}/scripts/report-filter.mjs
@@ -1322,7 +1808,7 @@ runs:
           --show "$REPORT_ON" --block-on "$BLOCK_ON" --out "$RESULT_REPORTED"
 
     - name: Quiet mode filter
-      if: steps.settings.outputs.decision != 'skip' && steps.guard.outputs.decision != 'skip'
+      if: steps.settings.outputs.decision == 'review' && steps.guard.outputs.decision == 'review'
       shell: bash
       env:
         QUIET: ${{ steps.settings.outputs.quiet }}
@@ -1338,8 +1824,8 @@ runs:
         fi
 
     - name: Post review comments
-      if: steps.settings.outputs.decision != 'skip' && steps.guard.outputs.decision != 'skip'
-      uses: actions/github-script@v7
+      if: steps.settings.outputs.decision == 'review' && steps.guard.outputs.decision == 'review'
+      uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
       env:
         BRAND: ${{ inputs.brand }}
         PR_NUMBER: ${{ steps.pr.outputs.number }}
@@ -1352,9 +1838,19 @@ runs:
         # to declare a run clean put "No findings" and a 👍 on a pull request
         # whose own summary listed the findings three lines above.
         RESULT_FOUND: ${{ runner.temp }}/result-reported.json
+        # Every post goes through scripts/publish-guard.mjs: `gh` redacts these
+        # two values (in every encoding) from whatever it sends.
+        PUBLISH_GUARD: ${{ github.action_path }}/scripts/publish-guard.mjs
+        CR_REDACT_API_KEY: ${{ inputs.orcarouter-api-key }}
+        CR_REDACT_GITHUB_TOKEN: ${{ inputs.github-token }}
       with:
         github-token: ${{ inputs.github-token }}
         script: |
+          // THE ONE POSTING FUNNEL (scripts/publish-guard.mjs): every comment,
+          // review, description and status goes out through `gh`, which redacts
+          // the OrcaRouter key and the GitHub token from what it sends.
+          const guard = await import(require('url').pathToFileURL(process.env.PUBLISH_GUARD).href);
+          const gh = guard.guardGithub(github);
           const fs = require('fs');
           const brand = process.env.BRAND;
           const num = Number(process.env.PR_NUMBER);
@@ -1430,13 +1926,13 @@ runs:
               `## 🐳 ${brand}\n\n` +
               `✅ **No findings** — nothing to flag in this PR. Great work!`;
             try {
-              await github.rest.pulls.createReview({
+              await gh.rest.pulls.createReview({
                 ...repo, pull_number: num, commit_id: sha,
                 body: cleanBody + footer, event: 'COMMENT',
               });
             } catch (e) {
               console.log('Clean review failed, posting as a comment:', e.message);
-              await github.rest.issues.createComment({
+              await gh.rest.issues.createComment({
                 ...repo, issue_number: num, body: cleanBody + footer,
               });
             }
@@ -1463,13 +1959,29 @@ runs:
           // lowercase fragments). So we split on just two reliable signals: a
           // model-written **bold** lead, or a short first sentence (which keeps the
           // body starting on a fresh, capitalized sentence). Anything else: whole.
+          //
+          // EVERY FRAGMENT OF FINDING TEXT IS SANITISED, AFTER THE SPLIT. The text
+          // comes from an engine that read the fork's files, so it may carry
+          // @mentions, HTML, links, forged headings or a fake "No findings";
+          // guard.sanitizeUntrusted neutralises all of those. It runs on the
+          // title and the body SEPARATELY, after splitting them: splitting
+          // sanitised text could cut a code span in two and leave half of it,
+          // unescaped, outside code.
+          const S = (t, o = {}) =>
+            guard.sanitizeUntrusted(t, { repo, serverUrl: process.env.GITHUB_SERVER_URL, ...o });
           const decorate = (c) => {
             const text = String(c.content || '');
             const m = text.match(tagRe);
             const sev = m ? m[1].toUpperCase() : 'P1';
             const badge = `${SEV[sev]} **${sev}**`;
             const raw = (m ? text.slice(m[0].length) : text).trim();
-            const mk = (t) => t.replace(/\*\*/g, '').replace(/[.!?]+$/, '').trim();
+            // A title is one line: whitespace collapsed, its own bold markup and
+            // closing punctuation removed, then sanitised as the continuation of
+            // the badge's line.
+            const mk = (t) =>
+              S(t.replace(/\*\*/g, '').replace(/[.!?]+$/, '').replace(/\s+/g, ' ').trim(), {
+                atLineStart: false, maxChars: 200,
+              });
             // 1) The model sometimes writes its own **bold** lead — use it verbatim.
             const lead = raw.match(/^\*\*(.+?)\*\*\s+([\s\S]+)$/);
             if (lead) {
@@ -1478,16 +1990,16 @@ runs:
               // for a bold title on all of them, so every explanation would pass
               // through it — and `x ** 2` or `src/**/*.js` in a finding came out
               // corrupted. Only the title's own markup is removed, by mk().
-              return `${badge} **${mk(lead[1])}**\n\n${lead[2].trim()}`;
+              return `${badge} **${mk(lead[1])}**\n\n${S(lead[2].trim())}`;
             }
             // 2) Else split only when the first sentence is short enough to title.
             const rest = raw.replace(/\*\*/g, '');
             const end = rest.search(/(?<=[.!?])\s/);
             if (end > 0 && end <= 72) {
-              return `${badge} **${mk(rest.slice(0, end))}**\n\n${rest.slice(end).trim()}`;
+              return `${badge} **${mk(rest.slice(0, end))}**\n\n${S(rest.slice(end).trim())}`;
             }
-            // 3) Hard to separate cleanly — keep the finding whole.
-            return `${badge} ${rest}`;
+            // 3) Hard to separate cleanly — keep the finding whole, on the badge's line.
+            return `${badge} ${S(rest, { atLineStart: false })}`;
           };
           const counts = {};
           for (const c of comments) counts[sevOf(c)] = (counts[sevOf(c)] || 0) + 1;
@@ -1496,28 +2008,48 @@ runs:
             .map((s) => `${SEV[s]} ${counts[s]} ${s}`)
             .join(' · ');
           const n = comments.length;
+          // BOUNDED. At most guard.MAX_POSTED_FINDINGS findings are posted, the
+          // most severe first; the rest are counted here (the gate and the PR
+          // summary still see every one of them). The review body itself is
+          // kept under GitHub's size limit by joinWithinLimit.
+          const rank = { P0: 0, P1: 1, P2: 2, P3: 3 };
+          const ordered = comments
+            .map((c, i) => ({ c, i }))
+            .sort((a, b) => rank[sevOf(a.c)] - rank[sevOf(b.c)] || a.i - b.i)
+            .map((x) => x.c);
+          const shown = ordered.slice(0, guard.MAX_POSTED_FINDINGS);
+          const notShown = n - shown.length;
           const summary =
             `## 🐳 ${brand}\n\n` +
-            `Found **${n}** issue${n === 1 ? '' : 's'} in this PR: ${breakdown}.`;
+            `Found **${n}** issue${n === 1 ? '' : 's'} in this PR: ${breakdown}.` +
+            (notShown > 0
+              ? `\n\n${notShown} more finding${notShown === 1 ? ' is' : 's are'} not posted here ` +
+                `(at most ${guard.MAX_POSTED_FINDINGS} per review); the PR summary counts all of them.`
+              : '');
 
           const inline = [];
           const rest = [];
-          for (const c of comments) {
+          for (const c of shown) {
             const line =
               c.end_line >= 1 ? c.end_line : c.start_line >= 1 ? c.start_line : 0;
             if (line >= 1 && c.path) {
-              inline.push({ path: c.path, line, side: 'RIGHT', body: decorate(c) });
+              inline.push({ path: String(c.path), line: Number(line), side: 'RIGHT', body: decorate(c) });
             } else {
               rest.push(c);
             }
           }
-          let body = summary;
-          for (const c of rest) body += `\n\n---\n\`${c.path}\`: ${decorate(c)}`;
+          // File paths are the fork's own: shown only as inline code that
+          // cannot break out (guard.codeSpan).
+          const body = guard.joinWithinLimit(
+            summary,
+            rest.map((c) => `${guard.codeSpan(c.path || '(no file)')}: ${decorate(c)}`),
+            { tail: footer },
+          );
 
           try {
-            await github.rest.pulls.createReview({
+            await gh.rest.pulls.createReview({
               ...repo, pull_number: num, commit_id: sha,
-              body: body + footer, event: 'COMMENT',
+              body, event: 'COMMENT',
               comments: inline,
             });
           } catch (e) {
@@ -1525,11 +2057,12 @@ runs:
             // The inline batch carries the actual findings; if GitHub rejects it
             // (uncommentable line, batch too large) append them as text so users
             // still see the details instead of bare counts.
-            let fallback = body;
-            for (const c of inline) {
-              fallback += `\n\n---\n\`${c.path}\` (line ${c.line}): ${c.body}`;
-            }
-            await github.rest.issues.createComment({ ...repo, issue_number: num, body: fallback + footer });
+            const fallback = guard.joinWithinLimit(
+              body.slice(0, body.length - footer.length),
+              inline.map((c) => `${guard.codeSpan(c.path)} (line ${Number(c.line)}): ${c.body}`),
+              { tail: footer },
+            );
+            await gh.rest.issues.createComment({ ...repo, issue_number: num, body: fallback });
           }
 
     # ONE summary per PR, written into the PR DESCRIPTION body (the only element
@@ -1539,9 +2072,11 @@ runs:
     # the gate verdict. The author's own description text is preserved untouched.
     # Runs BEFORE the enforce step so a blocked run still updates the summary.
     - name: Summary (PR description)
-      if: steps.settings.outputs.decision != 'skip' && steps.guard.outputs.decision != 'skip'
-      uses: actions/github-script@v7
+      if: steps.settings.outputs.decision == 'review' && steps.guard.outputs.decision == 'review'
+      uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
       env:
+        # Only comments this identity wrote count as the action's own (markers).
+        BOT_LOGIN: ${{ steps.pr.outputs.bot_login }}
         PR_NUMBER: ${{ steps.pr.outputs.number }}
         # THE FILTERED COPY, the same one the inline comments come from.
         #
@@ -1563,9 +2098,27 @@ runs:
         BLOCK_ON: ${{ steps.settings.outputs.block_on }}
         QUIET: ${{ steps.settings.outputs.quiet }}
         PASSES: ${{ steps.review.outputs.passes }}
+        # Changed files the engine skips (excluded-files.mjs, Harden step).
+        EXCLUDED_FILE: ${{ runner.temp }}/cr-excluded.json
+        # Lockfiles the size guard did not count (guard-diff.mjs).
+        LOCKFILES_FILE: ${{ runner.temp }}/cr-lockfiles.json
+        # Every post goes through scripts/publish-guard.mjs: `gh` redacts these
+        # two values (in every encoding) from whatever it sends.
+        PUBLISH_GUARD: ${{ github.action_path }}/scripts/publish-guard.mjs
+        CR_REDACT_API_KEY: ${{ inputs.orcarouter-api-key }}
+        CR_REDACT_GITHUB_TOKEN: ${{ inputs.github-token }}
       with:
         github-token: ${{ inputs.github-token }}
         script: |
+          // THE ONE POSTING FUNNEL (scripts/publish-guard.mjs): every comment,
+          // review, description and status goes out through `gh`, which redacts
+          // the OrcaRouter key and the GitHub token from what it sends.
+          const guard = await import(require('url').pathToFileURL(process.env.PUBLISH_GUARD).href);
+          const gh = guard.guardGithub(github);
+          // A marker counts only in a comment the action's own identity wrote
+          // (guard.isOwn — scripts/identity.mjs). Unknown identity matches
+          // nothing: post anew, edit and delete nothing.
+          const mine = guard.isOwn;
           const fs = require('fs');
           const { execFileSync } = require('child_process');
           const { pathToFileURL } = require('url');
@@ -1586,7 +2139,7 @@ runs:
             ...repo, issue_number: num, per_page: 100,
           });
           for (const stale of ['<!-- orca-code-review-disabled -->', '<!-- orca-code-review-skip -->', '<!-- orca-code-review-block -->', MARKER]) {
-            const notice = comments.find((c) => c.body && c.body.includes(stale));
+            const notice = comments.find((c) => mine(c) && c.body.includes(stale));
             if (!notice) continue;
             try {
               await github.rest.issues.deleteComment({ ...repo, comment_id: notice.id });
@@ -1611,13 +2164,16 @@ runs:
             }
           }
 
-          // Mirror the enforce step's verdict: gate.mjs on the final result
-          // (exit 0 = a BLOCK_ON severity is present).
-          let blocked;
+          // Mirror the enforce step's verdict: gate.mjs on the final result.
+          // Only exit 10 ("no BLOCK_ON finding") is a pass; a match (0) and a
+          // gate that could not decide (any other code) are what the enforce
+          // step fails on, so the summary must not announce a pass for them.
+          let blocked = true;
           try {
             execFileSync('node', [process.env.GATE, process.env.RESULT, '--has', process.env.BLOCK_ON], { stdio: 'pipe' });
-            blocked = true;
-          } catch { blocked = false; }
+          } catch (e) {
+            if (e && e.status === 10) blocked = false;
+          }
           // One tier, one name. This used to report `strong`, from when a cheap
           // pass could escalate to a strong one; with a single pass the label was
           // a leftover that made per-tier figures meaningless.
@@ -1642,16 +2198,25 @@ runs:
             } catch (e) { return true; }  // unreadable: keep the old behaviour
           })();
           if (process.env.QUIET === 'true' && summaryHasP2) args.push('--quiet');
+          // What this verdict does not cover: the changed files the engine skips.
+          if (process.env.EXCLUDED_FILE && fs.existsSync(process.env.EXCLUDED_FILE)) {
+            args.push('--excluded', process.env.EXCLUDED_FILE);
+          }
+          // And the lockfiles the size limit did not count.
+          if (process.env.LOCKFILES_FILE && fs.existsSync(process.env.LOCKFILES_FILE)) {
+            args.push('--lockfiles', process.env.LOCKFILES_FILE);
+          }
 
           const summaryMd = execFileSync('node', args, { encoding: 'utf8' });
           // Preserve the author's description text; only the marker region changes.
           const newBody = injectSummary(pr.body, summaryMd);
           if (newBody !== (pr.body || '')) {
-            await github.rest.pulls.update({ ...repo, pull_number: num, body: newBody });
+            await gh.rest.pulls.update({ ...repo, pull_number: num, body: newBody });
           }
 
     - name: Enforce severity gate
-      if: steps.settings.outputs.decision != 'skip' && steps.guard.outputs.decision != 'skip'
+      id: enforce
+      if: steps.settings.outputs.decision == 'review' && steps.guard.outputs.decision == 'review'
       shell: bash
       env:
         BRAND: ${{ inputs.brand }}
@@ -1661,11 +2226,28 @@ runs:
         # ALWAYS the unfiltered result — quiet mode never weakens the gate.
         RESULT: ${{ runner.temp }}/result.json
       run: |
-        if node "$GATE" "$RESULT" --has "$BLOCK_ON"; then
-          echo "::error::$BRAND: blocking — found $BLOCK_ON severity finding(s)."
-          exit 1
-        fi
-        echo "$BRAND: no $BLOCK_ON findings — gate passed."
+        # gate.mjs answers 0 (a blocking finding) or 10 (none). ANYTHING ELSE is
+        # a gate that could not decide — a crash exits 1, an unreadable result 3,
+        # a killed process 128+n — and none of those is evidence of a clean
+        # review, so the merge gate fails closed on them.
+        GATE_RC=0
+        node "$GATE" "$RESULT" --has "$BLOCK_ON" || GATE_RC=$?
+        case "$GATE_RC" in
+          0)
+            echo "verdict=blocked" >> "${GITHUB_OUTPUT:-/dev/null}"
+            echo "::error::$BRAND: blocking — found $BLOCK_ON severity finding(s)."
+            exit 1
+            ;;
+          10)
+            echo "verdict=pass" >> "${GITHUB_OUTPUT:-/dev/null}"
+            echo "$BRAND: no $BLOCK_ON findings — gate passed."
+            ;;
+          *)
+            echo "verdict=error" >> "${GITHUB_OUTPUT:-/dev/null}"
+            echo "::error::$BRAND: the severity gate could not decide (gate.mjs exited $GATE_RC) — failing closed."
+            exit 1
+            ;;
+        esac
 
     # Best-effort run counters to the OrcaRouter control plane — severity
     # counts and the gate verdict only, never code (see README "Run
@@ -1673,7 +2255,7 @@ runs:
     # a blocked gate fails the job above, and blocked runs must report too.
     # report.mjs itself exits 0 on any error, so these steps can't fail the job.
     - name: Report run
-      if: always() && inputs.report == 'true' && steps.settings.outputs.decision != 'skip' && steps.guard.outputs.decision != 'skip'
+      if: always() && inputs.report == 'true' && steps.settings.outputs.decision == 'review' && steps.guard.outputs.decision == 'review'
       shell: bash
       env:
         REPORT: ${{ github.action_path }}/scripts/report.mjs
@@ -1687,15 +2269,92 @@ runs:
         ORCAROUTER_API_KEY: ${{ inputs.orcarouter-api-key }}
         ENGINE_VERSION: ${{ inputs.engine-version }}
       run: |
-        # The verdict re-uses gate.mjs on the snapshot
-        # (exit 0 = a BLOCK_ON severity is present = blocked).
-        GATE_RESULT=pass
-        if node "$GATE" "$RESULT_FINAL" --has "$BLOCK_ON"; then GATE_RESULT=blocked; fi
+        # The verdict re-uses gate.mjs on the snapshot. Only its "no match"
+        # answer (exit 10) is a pass; a match (0) and a gate that could not
+        # decide (anything else) are both what the enforce step blocked on.
+        GATE_RESULT=blocked
+        GATE_RC=0
+        node "$GATE" "$RESULT_FINAL" --has "$BLOCK_ON" || GATE_RC=$?
+        if [ "$GATE_RC" = "10" ]; then GATE_RESULT=pass; fi
         node "$REPORT" "$RESULT_FINAL" \
           --repo "$REPO" --pr "$PR_NUMBER" --sha "$HEAD_SHA" \
           --tier standard --gate "$GATE_RESULT" \
           --url "$ORCAROUTER_URL" \
           --engine-version "$ENGINE_VERSION"
+
+    # THE VERDICT ON THE PR HEAD, on every ending. An on-demand review is an
+    # issue_comment run, and GitHub attaches that run's job check to the DEFAULT
+    # branch, so before this a red verdict from /orcacode-review never reached
+    # the PR. This status does, for every run: success only when a review ran
+    # on this head and the gate passed (or a skip was made advisory on purpose)
+    # — see scripts/review-status.mjs. Make the `status-context` status the
+    # required check. Needs `statuses: write`; without it this warns and the
+    # job check is the only verdict.
+    - name: Publish the review status
+      id: status
+      if: always() && steps.pr.outputs.run == 'true'
+      uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+      env:
+        STATUS_SCRIPT: ${{ github.action_path }}/scripts/review-status.mjs
+        STATUS_CONTEXT: ${{ inputs.status-context }}
+        HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+        DECISION: ${{ steps.settings.outputs.decision }}
+        REASON: ${{ steps.settings.outputs.reason }}
+        GUARD_DECISION: ${{ steps.guard.outputs.decision }}
+        GUARD_REASON: ${{ steps.guard.outputs.reason }}
+        ON_SKIPPED: ${{ inputs.on-skipped-review }}
+        ON_OVERSIZED: ${{ inputs.on-oversized-diff }}
+        REVIEW_OUTCOME: ${{ steps.review.outcome }}
+        ENFORCE_OUTCOME: ${{ steps.enforce.outcome }}
+        VERDICT: ${{ steps.enforce.outputs.verdict }}
+        BLOCK_ON: ${{ steps.settings.outputs.block_on }}
+        # Every post goes through scripts/publish-guard.mjs: `gh` redacts these
+        # two values (in every encoding) from whatever it sends.
+        PUBLISH_GUARD: ${{ github.action_path }}/scripts/publish-guard.mjs
+        CR_REDACT_API_KEY: ${{ inputs.orcarouter-api-key }}
+        CR_REDACT_GITHUB_TOKEN: ${{ inputs.github-token }}
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          // THE ONE POSTING FUNNEL (scripts/publish-guard.mjs): every comment,
+          // review, description and status goes out through `gh`, which redacts
+          // the OrcaRouter key and the GitHub token from what it sends.
+          const guard = await import(require('url').pathToFileURL(process.env.PUBLISH_GUARD).href);
+          const gh = guard.guardGithub(github);
+          const context_ = (process.env.STATUS_CONTEXT || '').trim();
+          if (!context_) {
+            console.log('status-context is empty — not writing a commit status');
+            return;
+          }
+          const { decideStatus } = await import(require('url').pathToFileURL(process.env.STATUS_SCRIPT).href);
+          const { state, description } = decideStatus({
+            decision: process.env.DECISION || '',
+            reason: process.env.REASON || '',
+            guardDecision: process.env.GUARD_DECISION || '',
+            guardReason: process.env.GUARD_REASON || '',
+            onSkipped: process.env.ON_SKIPPED || '',
+            onOversized: process.env.ON_OVERSIZED || '',
+            reviewOutcome: process.env.REVIEW_OUTCOME || '',
+            enforceOutcome: process.env.ENFORCE_OUTCOME || '',
+            verdict: process.env.VERDICT || '',
+            blockOn: process.env.BLOCK_ON || '',
+          });
+          const server = process.env.GITHUB_SERVER_URL || 'https://github.com';
+          try {
+            await gh.rest.repos.createCommitStatus({
+              owner: context.repo.owner, repo: context.repo.repo,
+              sha: process.env.HEAD_SHA, state, context: context_,
+              description,
+              target_url: `${server}/${context.repo.owner}/${context.repo.repo}/actions/runs/${process.env.GITHUB_RUN_ID}`,
+            });
+            console.log(`status ${context_}: ${state} — ${description}`);
+          } catch (e) {
+            core.warning(
+              `Could not write the "${context_}" commit status (${e.status || e.message}). Grant the workflow ` +
+              `\`statuses: write\` so the verdict reaches the PR head — without it, an on-demand ` +
+              `(/orcacode-review) verdict does not appear on the pull request.`,
+            );
+          }
 
     # The 👀 said "I am looking at this". Once the review has been posted — or
     # has failed and said so — that is no longer true, and a reaction nobody
@@ -1714,9 +2373,12 @@ runs:
     # dependency, because failing a run over a leftover emoji would trade a
     # cosmetic problem for a real one.
     - name: Settle the review reactions
-      if: always()
+      if: always() && steps.pr.outputs.run == 'true'
       shell: bash
       env:
+        # Who the action is (scripts/identity.mjs): resolved, or recorded from
+        # its first post in this run. Only that login's 👀 is ours to clear.
+        BOT_LOGIN: ${{ steps.pr.outputs.bot_login }}
         GH_TOKEN: ${{ inputs.github-token }}
         REPO: ${{ github.repository }}
         PR_NUMBER: ${{ steps.pr.outputs.number }}
@@ -1736,7 +2398,7 @@ runs:
         #
         # The review body and the summary say everything the reactions would.
         # ONLY AN EXPLICIT "User" DECLINES. `gh api user` needs a user-scoped
-        # token, and github-token defaults to ${{ github.token }} — an
+        # token, and github-token defaults to the job's github.token — an
         # installation token, for which that endpoint returns no user. The old
         # `|| echo "Bot"` fallback was meant to cover that and did not: the call
         # can exit 0 with no `.type`, so ME_TYPE came back empty, `!= "Bot"` held,
@@ -1751,20 +2413,22 @@ runs:
           echo "github-token belongs to a user, not an app; leaving reactions alone"
           exit 0
         fi
-        # SAME TRAP AS THE TYPE PROBE, and it survived the fix to that one: with an
-        # installation token `gh api user` can exit 0 and print nothing, so
-        # `|| echo` never fires and ME came back EMPTY. The delete filter then read
-        # `select(.user.login=="")`, matched nothing, and the 👀 stayed on the PR
-        # for ever while the step reported success. Observed on a clean run that
-        # placed both 👀 and 👍 and cleared neither.
-        #
-        # Test the VALUE, not the exit status.
-        ME=$(gh api user --jq .login 2>/dev/null) || ME=""
-        [ -n "$ME" ] || ME="github-actions[bot]"
+        # WHOSE 👀: the identity funnel's answer (scripts/identity.mjs) — the
+        # login "Resolve PR refs" resolved, else the one recorded from the
+        # action's first post in this run. This used to fall back to
+        # github-actions[bot] for any installation token, which for a custom App
+        # cleared nothing of its own (and would have cleared the workflow bot's).
+        # Unknown clears nothing.
+        ME="${BOT_LOGIN:-}"
+        if [ -z "$ME" ] && [ -s "$RUNNER_TEMP/cr-identity" ]; then ME=$(cat "$RUNNER_TEMP/cr-identity"); fi
+        case "$ME" in
+          ""|*[!A-Za-z0-9\[\]-]*) ME="" ;;
+        esac
 
         # ------------------------------------------------------------------
         # 👀 — it said "I am looking at this", and the run has stopped looking.
         clear_eyes() {
+          [ -n "$ME" ] || { echo "identity unknown — leaving 👀 at $1"; return 0; }
           ids=$(gh api "$1" --paginate \
             --jq '.[] | select(.content=="eyes") | select(.user.login=="'"$ME"'") | .id' \
             2>/dev/null || true)
@@ -1832,11 +2496,13 @@ runs:
           "$RUNNER_TEMP/result-merged.json" \
           "$RUNNER_TEMP/cr-settings.json" "$RUNNER_TEMP/cr-rubric.md" \
           "$RUNNER_TEMP/cr-facts.json" "$RUNNER_TEMP/proxy.out" "$RUNNER_TEMP/proxy.err" \
+          "$RUNNER_TEMP/cr-upstream-key" "$RUNNER_TEMP/cr-excluded.json" \
           "$RUNNER_TEMP/policy-block.json" \
           "$RUNNER_TEMP/pr.diff" "$RUNNER_TEMP/diff-guard.json" "$RUNNER_TEMP/prev-summary.md" \
           "$RUNNER_TEMP/wallclock-timeout" "$RUNNER_TEMP/judge-unavailable" \
           "$RUNNER_TEMP/cr-usage.jsonl" \
-          "$RUNNER_TEMP/cr-clean" \
+          "$RUNNER_TEMP/cr-clean" "$RUNNER_TEMP/cr-identity" "$RUNNER_TEMP/cr-lockfiles.json" \
           "$RUNNER_TEMP/result.l1.json" "$RUNNER_TEMP/result.l2.json" \
           "$RUNNER_TEMP/result-extra.l1.json" "$RUNNER_TEMP/result-extra.l2.json" \
           "$RUNNER_TEMP/result.l2.log" "$RUNNER_TEMP/result-extra.l2.log"
+        rm -rf "$RUNNER_TEMP/ocr-engine"

@@ -80,7 +80,12 @@ private repo, and asking it there is noise.
 
 **Q4 — public repos only — "Who gets an automatic review?"** (`auto-review-authors`)
 - *Known contributors only (recommended)* → `"OWNER,MEMBER,COLLABORATOR,CONTRIBUTOR"`.
-- *Everyone* → `""`.
+- *Everyone* → `"OWNER,MEMBER,COLLABORATOR,CONTRIBUTOR,FIRST_TIME_CONTRIBUTOR,FIRST_TIMER,MANNEQUIN,NONE"`.
+
+Write the list out either way, never leave it unset and never write `"*"`: the
+release the shipped workflow pins (v1.6.0) reads unset as everyone and `"*"` as
+nobody, while from v1.7.0 (unreleased) unset means `OWNER,MEMBER,COLLABORATOR` on
+a public repo. An explicit list means the same to both.
 
 Say plainly why Q4 exists: the workflow runs on `pull_request_target` with your
 OrcaRouter secret, so on a public repo a stranger's PR can spend from your wallet.
@@ -160,12 +165,22 @@ gh pr create --fill && gh run watch
 
 A passing check blocks nothing until it is required. Walk the user through
 **Settings → Branches / Rulesets → Require status checks to pass** and adding the
-**`review`** check, or offer to do it:
+**`review`** check (the workflow's job), or offer to do it:
 
 ```bash
 gh api -X PATCH repos/<owner>/<name>/branches/<default>/protection/required_status_checks \
   -f 'checks[][context]=review'
 ```
+
+Require exactly that while the workflow pins v1.6.0: it writes no other check, and
+a required check that never reports blocks every PR for ever.
+
+From v1.7.0 (unreleased) the action also writes an **`OrcaCode Review`** commit
+status on the PR head after every run. Once the workflow pins the release that writes it,
+require that status instead of the `review` job: it is the only check an on-demand
+`/orcacode-review` run can update on the PR (GitHub reports that run's own job on
+the default branch), and a skipped review leaves it "Not reviewed", so an
+unreviewed PR cannot merge.
 
 Confirm before running — branch protection changes affect everyone on the repo.
 
@@ -223,18 +238,26 @@ gh run list --workflow orca-code-review.yml --limit 5
 gh run view <run-id> --log-failed
 ```
 
-`references/troubleshooting.md` maps each symptom to its cause and fix. The four that
+`references/troubleshooting.md` maps each symptom to its cause and fix. The ones that
 account for most reports:
 
-- **No run at all** — the PR is a draft and `trigger` is `ready_for_review`, the author
-  is outside `auto-review-authors`, or the app is off in the dashboard.
+- **"Review skipped" notice** — the PR is a draft and `trigger` is
+  `ready_for_review`, the author is outside `auto-review-authors`, or the app is off in
+  the dashboard. The job passes; a maintainer's `/orcacode-review` reviews the head.
+  From v1.7.0 (unreleased) the `OrcaCode Review` status reads "Not reviewed" until a
+  review runs, and `on-skipped-review: "fail"` fails the job too.
+- **`/orcacode-review` answered with "name the commit"** — from v1.7.0 (unreleased), on
+  a PR from a fork the command must name the head commit (`/orcacode-review <sha>`)
+  and that commit must still be the head. Read the new commits, then use the command
+  the reply gives.
 - **Run fails immediately, auth error** — `ORCAROUTER_API_KEY` is missing, misnamed, or
   scoped to an environment the job cannot read.
 - **"Diff too large" notice and a red check** — expected behavior with
   `on-oversized-diff: "fail"`. Split the PR, or raise `max-diff-kb` / `max-diff-files`.
-- **Reviews work but the console's Settings/Analytics tabs are empty** — `@v1` points at
-  a commit older than `scripts/settings.mjs` / `scripts/report.mjs`. There is no error
-  for this; verify with `git ls-tree v1 scripts/` against the action repo.
+- **Reviews work but the console's Settings/Analytics tabs are empty** — the pinned
+  action commit (or an old `@v1` tag) predates `scripts/settings.mjs` /
+  `scripts/report.mjs`. There is no error for this; verify with
+  `git ls-tree <sha> scripts/` against the action repo and pin a newer release commit.
 
 Report the actual failing output, not a paraphrase of it.
 
@@ -242,8 +265,9 @@ Report the actual failing output, not a paraphrase of it.
 
 Confirm with the user first, then in this order:
 
-1. **Drop the required check** — remove `review` from branch protection *before* deleting
-   the workflow. A required check whose workflow no longer exists never reports, and every
+1. **Drop the required check** — remove `review` (and the `OrcaCode Review` status,
+   if it was required — from v1.7.0 (unreleased)) from branch protection *before*
+   deleting the workflow. A required check whose workflow no longer exists never reports, and every
    PR blocks forever with no way to clear it.
 2. **Delete the workflow** — `rm .github/workflows/orca-code-review.yml`, commit, push.
 3. **Leave the secret** — say that `ORCAROUTER_API_KEY` is harmless to keep and is worth

@@ -1,0 +1,14 @@
+# Keeps every pinned `uses:` (action.yml and .github/workflows, each pinned to a
+# commit SHA with its version in a `# vX.Y.Z` comment) current: Dependabot
+# reads the comment, finds the newer release and opens a PR that bumps the SHA
+# and the comment together — the update arrives as a reviewable diff instead of
+# a tag that moved underneath us.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

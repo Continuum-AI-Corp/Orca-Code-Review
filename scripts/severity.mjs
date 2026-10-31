@@ -31,3 +31,29 @@ export function countSeverities(comments) {
   for (const c of Array.isArray(comments) ? comments : []) counts[severityOf(c)] += 1;
   return counts;
 }
+
+// Rank for "which is more severe": lower is worse. Folding findings together
+// (dedupe, exhaustive merge, judge clusters) keeps the most severe tag among
+// what it folds — a stage that merges must never be the one that lowers a P0.
+export const RANK = Object.freeze({ P0: 0, P1: 1, P2: 2, P3: 3 });
+
+export const moreSevere = (a, b) => (RANK[a] <= RANK[b] ? a : b);
+
+// `comment` with its leading tag set to `sev` (added when it had none). The
+// rest of the comment is untouched.
+export function withSeverity(comment, sev) {
+  const content = String(comment?.content || "");
+  const m = content.match(/^\s*\[(P[0-3])\]\s*/i);
+  const body = m ? content.slice(m[0].length) : content.replace(/^\s+/, "");
+  return { ...comment, content: `[${sev}] ${body}` };
+}
+
+// A finding about security: what the judge must never drop, whatever it
+// scores it. Deliberately broad — a false positive only keeps a finding the
+// reader then dismisses; a false negative lets a model talk a real one away.
+const SECURITY_RE =
+  /\b(?:security|vulnerab\w*|exploit\w*|inject\w*|xss|csrf|ssrf|rce|remote code execution|authenticat\w*|authori[sz]\w*|authn|authz|access[- ]control|privilege\w*|credential\w*|secrets?|api[- ]?keys?|passwords?|deseriali[sz]\w*|path traversal|directory traversal|sandbox\w*|exfiltrat\w*|cve-\d{4}-\d+)\b/i;
+
+export function isSecurityFinding(comment) {
+  return SECURITY_RE.test(String(comment?.content || ""));
+}

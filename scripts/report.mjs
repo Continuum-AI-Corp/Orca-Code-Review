@@ -24,6 +24,7 @@
 import fs from "node:fs";
 import { countSeverities } from "./severity.mjs";
 import { controlPlaneBase } from "./control-plane.mjs";
+import { gatewayUrlProblem } from "./gateway-url.mjs";
 
 const TIMEOUT_MS = 5000;
 const RETRY_PAUSE_MS = 500;
@@ -76,6 +77,12 @@ async function main() {
   };
   if (opts.engineVersion) payload.engine_version = opts.engineVersion;
 
+  // The key goes out as a Bearer header: never in clear off this machine.
+  const refused = gatewayUrlProblem(opts.url);
+  if (refused) {
+    console.error(`report: skipped — not sending the key: ${refused}`);
+    return;
+  }
   let endpoint;
   try {
     endpoint = `${controlPlaneBase(opts.url)}/api/code_review/report`;

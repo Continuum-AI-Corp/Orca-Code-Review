@@ -35,7 +35,8 @@
 //                            call (comments, reviews, the PR description, commit
 //                            statuses, check runs) has the OrcaRouter key and the
 //                            GitHub token REDACTED from what it sends — raw,
-//                            base64 at any alignment, base64url, URL-encoded.
+//                            base64 at any alignment, base64url, URL-encoded,
+//                            hex in any case, and split by invisible characters.
 //
 // The tokenizer errs one way only: whatever it is unsure is code, it treats as
 // text and escapes. Treating real code as text costs a cosmetic `&lt;`;
@@ -328,12 +329,14 @@ const MIN_SECRET = 8;
 // starts within the encoded bytes, so each of the three alignments contributes
 // the run of characters that the secret ALONE determines — that run appears in
 // any base64 stream carrying the secret at that alignment, whatever surrounds it.
+// Hex is matched in any letter case (see redactSecrets).
 function formsOf(secret) {
   const s = String(secret);
   const forms = new Set([s]);
   const enc = encodeURIComponent(s);
   if (enc !== s) forms.add(enc);
   const bytes = Buffer.from(s, "utf8");
+  forms.add(bytes.toString("hex"));
   for (const k of [0, 1, 2]) {
     const b64 = Buffer.concat([Buffer.alloc(k), bytes]).toString("base64");
     const start = Math.ceil((8 * k) / 6);
@@ -344,16 +347,50 @@ function formsOf(secret) {
       forms.add(core.replace(/\+/g, "-").replace(/\//g, "_"));
     }
   }
-  return [...forms].sort((a, b) => b.length - a.length);
+  return [...forms];
 }
 
+// Characters that render as nothing (zero-width space/joiners, word joiner,
+// BOM, soft hyphen, bidi marks — Unicode's format class). A secret split by
+// them still reads as the secret, so matching ignores them; the text keeps
+// them everywhere but inside a match (a neutralised @mention keeps its ZWJ).
+const INVISIBLE = /\p{Cf}/u;
+const HEX = /^[0-9a-f]+$/;
+
 export function redactSecrets(text, secrets = []) {
-  let out = String(text ?? "");
+  const src = String(text ?? "");
   const usable = secrets.filter((s) => typeof s === "string" && s.length >= MIN_SECRET);
-  for (const s of usable) {
-    for (const f of formsOf(s)) {
-      if (f && out.includes(f)) out = out.split(f).join("[REDACTED]");
+  if (!usable.length) return src;
+  // The visible text, and where each of its characters sits in `src`.
+  const units = [...src];
+  const at = [];
+  let visible = "";
+  let offset = 0;
+  for (const u of units) {
+    if (!INVISIBLE.test(u)) {
+      at.push(offset);
+      visible += u;
+      // Keep one entry per UTF-16 unit so `visible` indexes line up with `at`.
+      if (u.length === 2) at.push(offset + 1);
     }
+    offset += u.length;
+  }
+  // ASCII-only lowercasing keeps every index where it was.
+  const folded = visible.replace(/[A-Z]/g, (c) => c.toLowerCase());
+  const hit = new Uint8Array(src.length);
+  const forms = [...new Set(usable.flatMap(formsOf))].sort((a, b) => b.length - a.length);
+  for (const f of forms) {
+    const hay = HEX.test(f) ? folded : visible;
+    for (let i = hay.indexOf(f); i >= 0; i = hay.indexOf(f, i + 1)) {
+      const from = at[i];
+      const to = at[i + f.length - 1] + 1;
+      hit.fill(1, from, to);
+    }
+  }
+  let out = "";
+  for (let i = 0; i < src.length; i += 1) {
+    if (!hit[i]) out += src[i];
+    else if (i === 0 || !hit[i - 1]) out += "[REDACTED]";
   }
   return out;
 }

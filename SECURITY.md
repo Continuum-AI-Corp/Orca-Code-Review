@@ -137,7 +137,8 @@ Failure modes are closed:
   Absolute-form, scheme-relative and backslash request targets are refused.
 - **Nothing the action posts can carry it.** Every posting call redacts the key
   and the GitHub token — raw, base64 at any alignment, base64url,
-  URL-encoded, and as the Basic-auth value.
+  URL-encoded, hex in either letter case, as the Basic-auth value, and split
+  by zero-width or other invisible characters.
 - Helper scripts take the key from the environment, never from argv, so it
   does not surface in `/proc/<pid>/cmdline` or `ps`; the PR-head fetch passes
   the GitHub token in `GIT_CONFIG_*` environment variables (git >= 2.31), not

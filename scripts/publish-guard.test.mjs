@@ -157,6 +157,31 @@ describe("redactSecrets", () => {
   test("short or empty secrets are ignored rather than shredding the text", () => {
     assert.equal(redactSecrets("a b c", ["", "a", undefined]), "a b c");
   });
+
+  test("hex, lower, upper and mixed case", () => {
+    const hex = Buffer.from(KEY).toString("hex");
+    const mixed = [...hex].map((c, i) => (i % 2 ? c.toUpperCase() : c)).join("");
+    for (const form of [hex, hex.toUpperCase(), mixed]) {
+      const out = redactSecrets(`dump: ${form} end`, [KEY]);
+      assert.ok(!out.includes(form), `not redacted: ${form}`);
+      assert.match(out, /^dump: \[REDACTED\] end$/);
+    }
+  });
+
+  test("a copy split by invisible characters (zero-width, joiners, soft hyphen, bidi marks) is redacted", () => {
+    for (const z of ["​", "‌", "‍", "⁠", "﻿", "­", "‎"]) {
+      const split = [...KEY].join(z);
+      const out = redactSecrets(`x ${split} y`, [KEY]);
+      assert.equal(out, "x [REDACTED] y", `split by U+${z.codePointAt(0).toString(16)}`);
+    }
+    const b64split = b64(KEY).replace(/(.{4})/g, "$1​");
+    assert.ok(!redactSecrets(b64split, [KEY]).replace(/​/g, "").includes(b64(KEY).slice(4, 20)));
+  });
+
+  test("invisible characters elsewhere are left alone (a neutralised @‍mention stays neutralised)", () => {
+    const text = `ping @‍alice about ${KEY}`;
+    assert.equal(redactSecrets(text, [KEY]), "ping @‍alice about [REDACTED]");
+  });
 });
 
 describe("guardGithub: every posting method is redacted on the way out", () => {

@@ -112,7 +112,9 @@ jobs:
 
       - name: Test
         if: steps.check.outputs.needed == 'true'
-        run: node --test scripts/*.test.mjs
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          node --test scripts/*.test.mjs
 
       # A tarball that omits bin/ or skills/ still publishes cleanly and then
       # fails on the user's first `npx`. Assert the payload before shipping it.

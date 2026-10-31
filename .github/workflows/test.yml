@@ -35,6 +35,11 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
 
+      # Dev-only: the YAML parser the structural tests read action.yml and the
+      # shipped workflows with. `npm ci` installs exactly the lockfile (with its
+      # integrity hashes) and --ignore-scripts runs no install hook.
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+
       # Unquoted on purpose: the shell expands the glob into an explicit file
       # list. `node --test` only gained native glob support in Node 21, so a
       # quoted pattern would be read as a literal filename on the Node 20 leg.

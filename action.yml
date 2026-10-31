@@ -319,7 +319,7 @@ runs:
         # Checked once here rather than inside react(), so a token that cannot be
         # identified costs one API call, not two.
         # ONLY AN EXPLICIT "User" DECLINES. `gh api user` needs a user-scoped
-        # token, and github-token defaults to ${{ github.token }} — an
+        # token, and github-token defaults to the job's github.token — an
         # installation token, for which that endpoint returns no user. The old
         # `|| echo "Bot"` fallback was meant to cover that and did not: the call
         # can exit 0 with no `.type`, so ME_TYPE came back empty, `!= "Bot"` held,
@@ -604,11 +604,18 @@ runs:
         GH_TOKEN: ${{ inputs.github-token }}
         PR_NUMBER: ${{ steps.pr.outputs.number }}
       run: |
-        # Authenticate this one fetch with a command-scoped header (works for
-        # private repos) so the token is never written to disk for later steps.
+        # Authenticate this one fetch (works for private repos) without writing
+        # the token to disk for later steps AND without putting it on git's
+        # command line: `git -c http.extraheader=…` is argv, which any process
+        # on a shared runner can read from /proc/<pid>/cmdline or `ps`. The
+        # GIT_CONFIG_COUNT/KEY/VALUE environment form (git >= 2.31) carries the
+        # same config through the environment instead, and the header is scoped
+        # to the server's URL so it cannot follow a redirect elsewhere.
         AUTH=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
-        git -c "http.extraheader=Authorization: Basic $AUTH" \
-          fetch origin "pull/${PR_NUMBER}/head"
+        GIT_CONFIG_COUNT=1 \
+        GIT_CONFIG_KEY_0="http.${GITHUB_SERVER_URL:-https://github.com}/.extraheader" \
+        GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $AUTH" \
+          git fetch origin "pull/${PR_NUMBER}/head"
 
     - name: Oversized-diff guard
       id: guard
@@ -1736,7 +1743,7 @@ runs:
         #
         # The review body and the summary say everything the reactions would.
         # ONLY AN EXPLICIT "User" DECLINES. `gh api user` needs a user-scoped
-        # token, and github-token defaults to ${{ github.token }} — an
+        # token, and github-token defaults to the job's github.token — an
         # installation token, for which that endpoint returns no user. The old
         # `|| echo "Bot"` fallback was meant to cover that and did not: the call
         # can exit 0 with no `.type`, so ME_TYPE came back empty, `!= "Bot"` held,

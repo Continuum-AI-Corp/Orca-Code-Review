@@ -45,7 +45,7 @@ jobs:
       # Required so the local `uses: ./` action definition is present in the
       # workspace. On pull_request, the default checkout is the PR merge ref, so
       # `./` resolves to the action code being changed by the PR.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: ./
         with:
           orcarouter-api-key: ${{ secrets.ORCAROUTER_API_KEY }}

@@ -168,7 +168,12 @@ inputs:
     required: false
     default: "true"
   engine-version:
-    description: "Pinned @alibaba-group/open-code-review version (the review engine). Bump deliberately after testing — the later steps parse its JSON output shape."
+    description: >-
+      Pinned @alibaba-group/open-code-review version (the review engine). Only
+      versions whose checksums this release of the action pins
+      (scripts/engine-pins.json: the npm tarball's sha512 and each platform
+      binary's sha256) can be installed — any other value fails the run. Bump
+      deliberately after testing; the later steps parse its JSON output shape.
     required: false
     default: "1.3.13"
   timeout-minutes:
@@ -277,6 +282,7 @@ runs:
           "$RUNNER_TEMP/result.l1.json" "$RUNNER_TEMP/result.l2.json" \
           "$RUNNER_TEMP/result-extra.l1.json" "$RUNNER_TEMP/result-extra.l2.json" \
           "$RUNNER_TEMP/result.l2.log" "$RUNNER_TEMP/result-extra.l2.log"
+        rm -rf "$RUNNER_TEMP/ocr-engine"
 
     # Which event this is, whether the action acts on it at all, and the PR it
     # is about. `run` is the verdict every later step is gated on.
@@ -292,7 +298,7 @@ runs:
     # retarget re-reviews against the new base; a title edit does not).
     - name: Resolve PR refs
       id: pr
-      uses: actions/github-script@v7
+      uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
       with:
         github-token: ${{ inputs.github-token }}
         script: |
@@ -449,7 +455,7 @@ runs:
 
     # setup-node runs BEFORE checkout (it never reads the workspace) so the
     # settings fetch below has node available even on a bare self-hosted runner.
-    - uses: actions/setup-node@v4
+    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
       if: steps.pr.outputs.run == 'true'
       with:
         node-version: "20"
@@ -663,7 +669,7 @@ runs:
     # diff). "pass" makes skips advisory.
     - name: Skip review (settings)
       if: steps.settings.outputs.decision == 'skip'
-      uses: actions/github-script@v7
+      uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
       env:
         # Only comments this identity wrote count as the action's own (markers).
         BOT_LOGIN: ${{ steps.pr.outputs.bot_login }}
@@ -733,7 +739,7 @@ runs:
             );
           }
 
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       if: steps.settings.outputs.decision == 'review'
       with:
         fetch-depth: 0 # full history for the merge-base diff
@@ -823,7 +829,7 @@ runs:
     # "pass" restores the advisory behavior (notice + green check).
     - name: Skip review (diff too large)
       if: steps.guard.outputs.decision == 'skip'
-      uses: actions/github-script@v7
+      uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
       env:
         # Only comments this identity wrote count as the action's own (markers).
         BOT_LOGIN: ${{ steps.pr.outputs.bot_login }}
@@ -903,12 +909,24 @@ runs:
             );
           }
 
+    # FROM PINNED, VERIFIED BYTES, WITH NO INSTALL SCRIPTS. A plain
+    # `npm install -g` pinned only the top-level version, ran the package's
+    # postinstall (which downloads the Go engine binary and checks it against a
+    # checksum file from the same release — no independent pin) and checked no
+    # integrity. scripts/install-engine.mjs verifies the npm tarball against
+    # the sha512 pinned in scripts/engine-pins.json, installs it with
+    # --ignore-scripts into a prefix under $RUNNER_TEMP, and verifies the
+    # binary against its pinned sha256. An engine-version without pins fails.
     - name: Install review engine
       if: steps.settings.outputs.decision == 'review' && steps.guard.outputs.decision == 'review'
       shell: bash
       env:
         ENGINE_VERSION: ${{ inputs.engine-version }}
-      run: npm install -g "@alibaba-group/open-code-review@${ENGINE_VERSION}"
+        INSTALLER: ${{ github.action_path }}/scripts/install-engine.mjs
+        ENGINE_PREFIX: ${{ runner.temp }}/ocr-engine
+      run: |
+        ENGINE_BIN=$(node "$INSTALLER" --version "$ENGINE_VERSION" --prefix "$ENGINE_PREFIX")
+        echo "$ENGINE_BIN" >> "$GITHUB_PATH"
 
     # THE KEY GOES TO THE PROXY, NEVER TO THE ENGINE. The engine reads the PR
     # checkout — fork-controlled files written to steer an LLM agent — so
@@ -1441,7 +1459,7 @@ runs:
     # skipped run (the review step's own cleanup never ran on a skip).
     - name: Surface guardrail / firewall block
       if: always() && steps.settings.outputs.decision == 'review' && steps.guard.outputs.decision == 'review'
-      uses: actions/github-script@v7
+      uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
       env:
         # Only comments this identity wrote count as the action's own (markers).
         BOT_LOGIN: ${{ steps.pr.outputs.bot_login }}
@@ -1596,7 +1614,7 @@ runs:
 
     - name: Post review comments
       if: steps.settings.outputs.decision == 'review' && steps.guard.outputs.decision == 'review'
-      uses: actions/github-script@v7
+      uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
       env:
         BRAND: ${{ inputs.brand }}
         PR_NUMBER: ${{ steps.pr.outputs.number }}
@@ -1844,7 +1862,7 @@ runs:
     # Runs BEFORE the enforce step so a blocked run still updates the summary.
     - name: Summary (PR description)
       if: steps.settings.outputs.decision == 'review' && steps.guard.outputs.decision == 'review'
-      uses: actions/github-script@v7
+      uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
       env:
         # Only comments this identity wrote count as the action's own (markers).
         BOT_LOGIN: ${{ steps.pr.outputs.bot_login }}
@@ -2059,7 +2077,7 @@ runs:
     - name: Publish the review status
       id: status
       if: always() && steps.pr.outputs.run == 'true'
-      uses: actions/github-script@v7
+      uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
       env:
         STATUS_SCRIPT: ${{ github.action_path }}/scripts/review-status.mjs
         STATUS_CONTEXT: ${{ inputs.status-context }}
@@ -2266,3 +2284,4 @@ runs:
           "$RUNNER_TEMP/result.l1.json" "$RUNNER_TEMP/result.l2.json" \
           "$RUNNER_TEMP/result-extra.l1.json" "$RUNNER_TEMP/result-extra.l2.json" \
           "$RUNNER_TEMP/result.l2.log" "$RUNNER_TEMP/result-extra.l2.log"
+        rm -rf "$RUNNER_TEMP/ocr-engine"

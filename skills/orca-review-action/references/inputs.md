@@ -42,7 +42,7 @@ empty string is valid and means "none".
 | Input | Default | What it does |
 | --- | --- | --- |
 | `auto-review-authors` | unset: everyone (v1.6.0) | Author-association allowlist for **automatic** reviews. Others can still be reviewed on demand via `/orcacode-review`. Values: `OWNER`, `MEMBER`, `COLLABORATOR`, `CONTRIBUTOR`, `FIRST_TIME_CONTRIBUTOR`, `FIRST_TIMER`, `MANNEQUIN`, `NONE`. Write the list out: it means the same to every release. |
-| | | From v1.7.0 (unreleased): unset means `OWNER,MEMBER,COLLABORATOR` on a public repo (everyone on a private one), and `"*"` means everyone — v1.6.0 reads `"*"` as nobody. |
+| | | From v1.7.0 (unreleased): unset means `OWNER,MEMBER,COLLABORATOR` on a public repo (everyone on a private one), and `"*"` means everyone — v1.6.0 reads `"*"` as nobody. Unless it lets everyone through, a push to a fork PR by someone other than its author is auto-reviewed only if that pusher can write to the repository. |
 | `on-skipped-review` | `pass` | From v1.7.0 (unreleased). What a settings skip (auto-review off, on-demand mode, a draft, an author outside the allowlist) does to the **job**: `pass` keeps it green, as every release did; `fail` fails it. The `status-context` status reports a skip as "Not reviewed" either way. |
 | `status-context` | `OrcaCode Review` | From v1.7.0 (unreleased). Commit status written on the PR head after every run (on-demand runs included): success only when a review ran on that head and the gate passed; a settings skip is "Not reviewed". Make it the required check; needs `statuses: write`. `""` turns it off. |
 

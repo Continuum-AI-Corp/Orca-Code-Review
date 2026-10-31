@@ -380,8 +380,9 @@ runs:
             return stop('the pull request was edited without changing its base');
           }
 
-          let base, headSha, num, isDraft, authorAssoc;
+          let base, headSha, num, isDraft, authorAssoc, prData;
           if (context.eventName === 'pull_request_target') {
+            prData = payload.pull_request;
             base = payload.pull_request.base.ref;
             headSha = payload.pull_request.head.sha;
             num = payload.pull_request.number;
@@ -392,11 +393,44 @@ runs:
             const { data: pr } = await github.rest.pulls.get({
               owner: context.repo.owner, repo: context.repo.repo, pull_number: num,
             });
+            prData = pr;
             base = pr.base.ref; headSha = pr.head.sha;
             isDraft = pr.draft === true;
             authorAssoc = pr.author_association || 'NONE';
           }
           core.setOutput('run', 'true');
+
+          // THE AUTHOR IS NOT THE PUSHER. author_association is the PR author's,
+          // so on a maintainer's PR whose head lives in an outsider's fork every
+          // push the outsider makes passes the author gate. On `synchronize`
+          // from a fork, when someone other than the author pushed, ask GitHub
+          // whether THEY can write here; the settings gate auto-reviews only if
+          // so (unless auto-review-authors lets everyone through anyway).
+          // "n/a" = nothing to ask; "false" also when GitHub cannot say.
+          let pusher = '';
+          let pusherTrusted = 'n/a';
+          const headRepo = prData && prData.head && prData.head.repo ? prData.head.repo.full_name : null;
+          const baseRepo = `${context.repo.owner}/${context.repo.repo}`;
+          const author = prData && prData.user ? prData.user.login : '';
+          const sender = payload.sender ? payload.sender.login : '';
+          if (context.eventName !== 'issue_comment' && payload.action === 'synchronize' &&
+              String(headRepo || '').toLowerCase() !== baseRepo.toLowerCase() && sender !== author) {
+            pusher = sender || '(unknown)';
+            pusherTrusted = 'false';
+            if (sender) {
+              try {
+                const { data: level } = await github.rest.repos.getCollaboratorPermissionLevel({
+                  owner: context.repo.owner, repo: context.repo.repo, username: sender,
+                });
+                const can = ['admin', 'maintain', 'write'];
+                if (can.includes(level.permission) || can.includes(level.role_name)) pusherTrusted = 'true';
+              } catch (e) {
+                core.warning(`OrcaCode Review: could not read ${sender}'s permission on this repository (${e.status || e.message}) — treating the push as untrusted.`);
+              }
+            }
+          }
+          core.setOutput('pusher', pusher);
+          core.setOutput('pusher_trusted', pusherTrusted);
           // WHO THE ACTION POSTS AS — scripts/identity.mjs, the one funnel. The
           // marker lookups in later steps (<!-- orca-code-review-* -->) only
           // count a comment this identity wrote. Never a guess: an App token
@@ -548,6 +582,10 @@ runs:
         AUTHOR_ASSOC: ${{ steps.pr.outputs.author_association }}
         AUTO_REVIEW_AUTHORS: ${{ inputs.auto-review-authors }}
         REPO_PRIVATE: ${{ steps.pr.outputs.repo_private }}
+        # Who pushed to a fork PR, if not its author, and whether they can
+        # write here (Resolve PR refs): "true", "false", or "n/a".
+        PUSHER: ${{ steps.pr.outputs.pusher }}
+        PUSHER_TRUSTED: ${{ steps.pr.outputs.pusher_trusted }}
         BRAND: ${{ inputs.brand }}
       run: |
         # THE FIRST STEP THAT READS orcarouter-url judges it, for every run: the
@@ -614,6 +652,11 @@ runs:
                 # Maintainer comment commands are unaffected (gated in the
                 # Resolve PR refs step and the workflow `if:`).
                 DECISION=skip; REASON="author association $AUTHOR_ASSOC not in auto-review-authors ($authors)"
+              elif [ "${PUSHER_TRUSTED:-}" = "false" ] && [ "$authors" != "*" ]; then
+                # The author passed, but someone else pushed this head into a
+                # fork PR and cannot write here. Where the allowlist lets
+                # everyone through, they could have opened a PR of their own.
+                DECISION=skip; REASON="pushed to a fork PR by ${PUSHER:-someone} without write access to this repository (auto-review-authors gates the pusher too)"
               fi
               ;;
           esac

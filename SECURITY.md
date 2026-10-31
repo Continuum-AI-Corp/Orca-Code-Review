@@ -98,6 +98,13 @@ approval to run workflows from fork PRs" gate. The review key is wallet-metered.
   only `OWNER`, `MEMBER` and `COLLABORATOR` authors; a private repository
   reviews everyone. Set your own list, or `"*"` to review everyone on a public
   repository deliberately. Everyone else is reviewed on demand.
+- **Pushes to a fork PR**: `author_association` is the PR author's, not the
+  pusher's. On a `synchronize` whose head lives in another repository and was
+  pushed by someone other than the PR's author, the action asks GitHub whether
+  that pusher can write to this repository (write, maintain or admin) and
+  auto-reviews only if so — otherwise it is a skip, which the commit status
+  reports as "Not reviewed". Not asked when `auto-review-authors` lets everyone
+  through anyway (`"*"`, or unset on a private repository).
 - **On-demand reviews** (`/orcacode-review`, `@orcacode review`, …): the action
   itself refuses a comment-triggered run unless the comment is on a pull
   request, is the review command, and its author is `OWNER`, `MEMBER` or

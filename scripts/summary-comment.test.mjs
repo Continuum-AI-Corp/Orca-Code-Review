@@ -253,3 +253,49 @@ describe("robustness", () => {
     }
   });
 });
+
+describe("--excluded: files the engine did not review are listed", () => {
+  const BASE = ["--tier", "standard", "--push", "1", "--gate", "pass"];
+  const excluded = (obj) => {
+    const f = join(dir, `${Math.random().toString(36).slice(2)}-excluded.json`);
+    writeFileSync(f, JSON.stringify(obj));
+    return f;
+  };
+
+  test("each skipped file is listed with its reason, in a collapsible block", () => {
+    const f = excluded({
+      excluded: [
+        { path: "src/a.test.js", code: "default_path", reason: "matches a default exclude pattern" },
+        { path: "logo.png", code: "binary", reason: "binary" },
+      ],
+      omitted: 0,
+    });
+    const out = run([], [...BASE, "--excluded", f]);
+    assert.match(out, /<details><summary>Not reviewed: 2 changed files/);
+    assert.match(out, /`src\/a\.test\.js` \| matches a default exclude pattern/);
+    assert.match(out, /`logo\.png` \| binary/);
+  });
+
+  test("the omitted count beyond the cap is stated", () => {
+    const f = excluded({ excluded: [{ path: "a.snap", code: "default_path", reason: "r" }], omitted: 41 });
+    assert.match(run([], [...BASE, "--excluded", f]), /and 41 more/);
+  });
+
+  test("a hostile file name cannot break out of its table cell or code span", () => {
+    const f = excluded({
+      excluded: [{ path: "x`|<img src=x>\n## Fake heading.js", code: "default_path", reason: "r" }],
+      omitted: 0,
+    });
+    const out = run([], [...BASE, "--excluded", f]);
+    const row = out.split("\n").find((l) => l.includes("img src"));
+    assert.ok(row, "the row is rendered");
+    assert.doesNotMatch(out, /^## Fake heading/m, "a newline in a path started a new markdown block");
+    assert.equal((row.match(/`/g) || []).length, 2, "a backtick in a path broke out of the code span");
+    assert.match(row, /\\\|/, "a pipe in a path is escaped");
+  });
+
+  test("an empty or unreadable list renders nothing", () => {
+    assert.doesNotMatch(run([], [...BASE, "--excluded", excluded({ excluded: [], omitted: 0 })]), /Not reviewed/);
+    assert.doesNotMatch(run([], [...BASE, "--excluded", join(dir, "missing.json")]), /Not reviewed/);
+  });
+});

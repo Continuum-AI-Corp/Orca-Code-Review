@@ -3,7 +3,13 @@
 //
 //   node summary-comment.mjs <result.json> --tier cheap|strong --push <n>
 //     --gate pass|blocked [--prev <file with the previous comment body>]
-//     [--passes <n>] [--quiet] [--block-on P0,P1]
+//     [--passes <n>] [--quiet] [--block-on P0,P1] [--excluded <file.json>]
+//
+// --excluded names excluded-files.mjs's output: the changed files the engine
+// skips (tests, fixtures, generated code, binaries, unsupported types). They
+// are listed under the gate line, so a reader sees what the verdict does NOT
+// cover. File names are attacker-controlled, so each renders inside a code span
+// with control characters, backticks and pipes neutralised.
 //
 // Prints the summary MARKDOWN to stdout. The driver (action.yml) writes it into
 // a marker-delimited region of the PR DESCRIPTION body (scripts/inject-summary.mjs),
@@ -75,6 +81,7 @@ for (let i = 0; i < rest.length; i += 1) {
   else if (rest[i] === "--passes") opts.passes = rest[++i];
   else if (rest[i] === "--quiet") opts.quiet = true;
   else if (rest[i] === "--block-on") opts.blockOn = rest[++i];
+  else if (rest[i] === "--excluded") opts.excluded = rest[++i];
   // NO else: an unrecognised flag, and the value that follows it, are skipped
   // one token at a time. That is what makes removing --fix-first safe to ship
   // ahead of the caller that still passes it — the pair falls through without
@@ -164,5 +171,39 @@ lines.push(
     ? `❌ ${blocking} finding${blocking === 1 ? "" : "s"} block${blocking === 1 ? "s" : ""} merge`
     : "✅ no blocking findings",
 );
+
+// What the verdict above does not cover. Best-effort: an unreadable list
+// renders nothing rather than failing the summary.
+let skipped = { excluded: [], omitted: 0 };
+if (opts.excluded) {
+  try {
+    const j = JSON.parse(fs.readFileSync(opts.excluded, "utf8"));
+    if (Array.isArray(j.excluded)) skipped = { excluded: j.excluded, omitted: Number(j.omitted) || 0 };
+  } catch {
+    /* no list */
+  }
+}
+// One table cell of attacker-controlled text: no line breaks or control
+// characters (they would end the table), no backticks (they would end the code
+// span), pipes escaped (they would end the cell), and a bounded length.
+const cell = (v, max) =>
+  String(v ?? "")
+    .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, " ")
+    .replace(/`/g, "'")
+    .slice(0, max)
+    .replace(/\|/g, "\\|");
+if (skipped.excluded.length) {
+  const total = skipped.excluded.length + skipped.omitted;
+  lines.push(
+    "",
+    `<details><summary>Not reviewed: ${total} changed file${total === 1 ? "" : "s"} the review engine skips</summary>`,
+    "",
+    "| File | Why |",
+    "|---|---|",
+    ...skipped.excluded.map((e) => `| \`${cell(e.path, 200)}\` | ${cell(e.reason, 120)} |`),
+  );
+  if (skipped.omitted) lines.push("", `…and ${skipped.omitted} more.`);
+  lines.push("", "</details>");
+}
 
 process.stdout.write(`${lines.join("\n")}\n`);

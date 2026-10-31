@@ -244,7 +244,7 @@ runs:
           "$RUNNER_TEMP/result-merged.json" \
           "$RUNNER_TEMP/cr-settings.json" "$RUNNER_TEMP/cr-rubric.md" \
           "$RUNNER_TEMP/cr-facts.json" "$RUNNER_TEMP/proxy.out" "$RUNNER_TEMP/proxy.err" \
-          "$RUNNER_TEMP/cr-upstream-key" \
+          "$RUNNER_TEMP/cr-upstream-key" "$RUNNER_TEMP/cr-excluded.json" \
           "$RUNNER_TEMP/policy-block.json" \
           "$RUNNER_TEMP/pr.diff" "$RUNNER_TEMP/diff-guard.json" "$RUNNER_TEMP/prev-summary.md" \
           "$RUNNER_TEMP/wallclock-timeout" "$RUNNER_TEMP/judge-unavailable" \
@@ -637,6 +637,25 @@ runs:
         GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $AUTH" \
           git fetch origin "pull/${PR_NUMBER}/head"
 
+    # BEFORE ANYTHING READS THE CHECKOUT (the size guard below, then the
+    # engine): delete every symlink, take the `diff` attribute away from the
+    # PR's .gitattributes, drop PR-controlled engine config and restore the base
+    # revision's .gitignore — see scripts/harden-checkout.mjs. Then list the
+    # changed files the engine will skip, for the summary.
+    - name: Harden the checkout
+      id: harden
+      if: steps.settings.outputs.decision != 'skip'
+      shell: bash
+      env:
+        HARDEN: ${{ github.action_path }}/scripts/harden-checkout.mjs
+        EXCLUDED: ${{ github.action_path }}/scripts/excluded-files.mjs
+        BASE: origin/${{ steps.pr.outputs.base }}
+        HEAD: ${{ steps.pr.outputs.head_sha }}
+        EXCLUDED_FILE: ${{ runner.temp }}/cr-excluded.json
+      run: |
+        node "$HARDEN" --base "$BASE"
+        node "$EXCLUDED" --base "$BASE" --head "$HEAD" --out "$EXCLUDED_FILE" > /dev/null
+
     - name: Oversized-diff guard
       id: guard
       if: steps.settings.outputs.decision != 'skip'
@@ -807,6 +826,7 @@ runs:
         GATE: ${{ github.action_path }}/scripts/gate.mjs
         CHECK: ${{ github.action_path }}/scripts/check-result.mjs
         PROXY: ${{ github.action_path }}/scripts/fact-proxy.mjs
+        HARDEN: ${{ github.action_path }}/scripts/harden-checkout.mjs
         BRAND: ${{ inputs.brand }}
         # The real OrcaRouter endpoint. OCR does NOT talk to it directly: the
         # in-job proxy stamps the routing facts as headers and forwards here.
@@ -857,8 +877,10 @@ runs:
         # so never let PR-controlled config weaken the review. A fork could commit
         # `.opencodereview/rule.json` to exclude its own changed files or replace
         # the built-in checks, yielding an empty result that passes as
-        # clean. Drop it so OCR uses system defaults + our --background instruction.
-        rm -rf .opencodereview
+        # clean, or a symlink that points the engine's file tools outside the
+        # repository. The Harden step already did this; it runs again here, right
+        # before the engine, so nothing between the two can leave one behind.
+        node "$HARDEN" --base "$BASE" > /dev/null
 
         # Clear any stale block file before the proxy can write a fresh one. On a
         # self-hosted runner $RUNNER_TEMP may be reused, and the always()-step
@@ -1625,6 +1647,8 @@ runs:
         BLOCK_ON: ${{ steps.settings.outputs.block_on }}
         QUIET: ${{ steps.settings.outputs.quiet }}
         PASSES: ${{ steps.review.outputs.passes }}
+        # Changed files the engine skips (excluded-files.mjs, Harden step).
+        EXCLUDED_FILE: ${{ runner.temp }}/cr-excluded.json
       with:
         github-token: ${{ inputs.github-token }}
         script: |
@@ -1707,6 +1731,10 @@ runs:
             } catch (e) { return true; }  // unreadable: keep the old behaviour
           })();
           if (process.env.QUIET === 'true' && summaryHasP2) args.push('--quiet');
+          // What this verdict does not cover: the changed files the engine skips.
+          if (process.env.EXCLUDED_FILE && fs.existsSync(process.env.EXCLUDED_FILE)) {
+            args.push('--excluded', process.env.EXCLUDED_FILE);
+          }
 
           const summaryMd = execFileSync('node', args, { encoding: 'utf8' });
           // Preserve the author's description text; only the marker region changes.
@@ -1917,7 +1945,7 @@ runs:
           "$RUNNER_TEMP/result-merged.json" \
           "$RUNNER_TEMP/cr-settings.json" "$RUNNER_TEMP/cr-rubric.md" \
           "$RUNNER_TEMP/cr-facts.json" "$RUNNER_TEMP/proxy.out" "$RUNNER_TEMP/proxy.err" \
-          "$RUNNER_TEMP/cr-upstream-key" \
+          "$RUNNER_TEMP/cr-upstream-key" "$RUNNER_TEMP/cr-excluded.json" \
           "$RUNNER_TEMP/policy-block.json" \
           "$RUNNER_TEMP/pr.diff" "$RUNNER_TEMP/diff-guard.json" "$RUNNER_TEMP/prev-summary.md" \
           "$RUNNER_TEMP/wallclock-timeout" "$RUNNER_TEMP/judge-unavailable" \

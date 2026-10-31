@@ -57,3 +57,37 @@ describe("the engine never holds the real OrcaRouter key", () => {
     );
   });
 });
+
+describe("the engine sees no symlink and no PR-controlled config", () => {
+  test("tracked and untracked symlinks are gone before the engine starts", async () => {
+    const { repo, sha } = makeRepo("links", (d) => {
+      fs.symlinkSync("/proc/self/environ", path.join(d, "notes.md"));
+      fs.mkdirSync(path.join(d, ".opencodereview"));
+      fs.writeFileSync(path.join(d, ".opencodereview", "rule.json"), '{"exclude":["**"]}');
+    });
+    fs.symlinkSync("/root", path.join(repo, "untracked-link"));
+    const { r, seen } = await runReview({ repo, sha });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.deepEqual(seen.symlinks, []);
+    assert.equal(fs.existsSync(path.join(repo, ".opencodereview")), false);
+  });
+});
+
+describe("action.yml: the checkout is hardened before anything reads it", () => {
+  test("a Harden step runs after the PR-head fetch and before the size guard", async () => {
+    const { actionSteps } = await import("./test-helpers/action-yaml.mjs");
+    const names = actionSteps().map((s) => s.id || s.name);
+    const fetch = names.indexOf("Fetch PR head (covers fork PRs)");
+    const harden = names.indexOf("harden");
+    const guard = names.indexOf("guard");
+    assert.ok(harden > fetch && harden < guard, `order: fetch=${fetch} harden=${harden} guard=${guard}`);
+    assert.match(step("harden").run, /harden-checkout\.mjs|\$HARDEN/);
+    assert.match(step("harden").run, /excluded-files\.mjs|\$EXCLUDED/);
+  });
+
+  test("the summary is handed the list of skipped files", async () => {
+    const script = step("Summary (PR description)").with.script;
+    assert.match(script, /--excluded/);
+    assert.ok(step("Summary (PR description)").env.EXCLUDED_FILE, "the summary step needs EXCLUDED_FILE");
+  });
+});

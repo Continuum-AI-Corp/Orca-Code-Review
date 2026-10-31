@@ -46,7 +46,10 @@ What a hijacked review can and cannot do:
 - **It has no merge authority.** Findings can only *block* a merge (a failing
   check) or add comments. No code path lets model output approve or merge.
 - **It writes to the PR**: review comments, a few marker comments (notices it
-  later edits or deletes — only comments its own identity wrote count), a
+  later edits or deletes — only comments its own identity wrote count; that
+  identity is the `bot-login` input, else the token's user, else
+  github-actions[bot] for the job's own token, else learned from the action's
+  first post in the run — never assumed), a
   commit status on the head SHA, and a **summary region inside the PR
   description**, which the action rewrites on every run (the author's own text
   outside the marked region is preserved).

@@ -61,6 +61,17 @@ inputs:
     description: "Token used to fetch the PR head, post review comments, write the commit status on the PR head, and react to a /orcacode-review command."
     required: false
     default: ${{ github.token }}
+  bot-login:
+    description: >-
+      The login the action posts as, when github-token is a GitHub App's
+      installation token other than the job's own (e.g. "my-app[bot]"). The
+      action recognises its earlier notices by this login; without it, such a
+      token's identity is learned only from the first comment the action posts
+      in a run, so a notice from an earlier run is posted again instead of
+      edited. Not needed for the default github.token (github-actions[bot]) or
+      a personal token (its user).
+    required: false
+    default: ""
   brand:
     description: "Name shown on PR comments."
     required: false
@@ -290,7 +301,7 @@ runs:
           "$RUNNER_TEMP/pr.diff" "$RUNNER_TEMP/diff-guard.json" "$RUNNER_TEMP/prev-summary.md" \
           "$RUNNER_TEMP/wallclock-timeout" "$RUNNER_TEMP/judge-unavailable" \
           "$RUNNER_TEMP/cr-usage.jsonl" \
-          "$RUNNER_TEMP/cr-clean" \
+          "$RUNNER_TEMP/cr-clean" "$RUNNER_TEMP/cr-identity" \
           "$RUNNER_TEMP/result.l1.json" "$RUNNER_TEMP/result.l2.json" \
           "$RUNNER_TEMP/result-extra.l1.json" "$RUNNER_TEMP/result-extra.l2.json" \
           "$RUNNER_TEMP/result.l2.log" "$RUNNER_TEMP/result-extra.l2.log"
@@ -311,6 +322,12 @@ runs:
     - name: Resolve PR refs
       id: pr
       uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+      env:
+        IDENTITY: ${{ github.action_path }}/scripts/identity.mjs
+        BOT_LOGIN_INPUT: ${{ inputs.bot-login }}
+        # "true" when github-token is the job's own GITHUB_TOKEN — the one
+        # installation token whose author (github-actions[bot]) is known.
+        TOKEN_IS_JOB_TOKEN: ${{ inputs.github-token == github.token }}
       with:
         github-token: ${{ inputs.github-token }}
         script: |
@@ -355,20 +372,25 @@ runs:
             authorAssoc = pr.author_association || 'NONE';
           }
           core.setOutput('run', 'true');
-          // WHO THE ACTION POSTS AS, resolved once. The marker lookups below
-          // (<!-- orca-code-review-* -->) only count a comment this identity
-          // wrote — otherwise anyone could plant a marker and have the action
-          // edit or delete THEIR comment. A personal token names its user; the
-          // default GITHUB_TOKEN has no user (the call is refused) and posts as
-          // github-actions[bot].
-          let botLogin = 'github-actions[bot]';
-          try {
-            const { data: me } = await github.rest.users.getAuthenticated();
-            if (me && me.login) botLogin = me.login;
-          } catch (e) {
-            // An installation token: keep github-actions[bot].
+          // WHO THE ACTION POSTS AS — scripts/identity.mjs, the one funnel. The
+          // marker lookups in later steps (<!-- orca-code-review-* -->) only
+          // count a comment this identity wrote. Never a guess: an App token
+          // that is not the job's own is "unknown" until the action's first
+          // post in this run reports its author (or bot-login names it).
+          const identity = await import(require('url').pathToFileURL(process.env.IDENTITY).href);
+          const me = await identity.resolveIdentity({
+            github,
+            botLogin: process.env.BOT_LOGIN_INPUT,
+            tokenIsJobToken: process.env.TOKEN_IS_JOB_TOKEN === 'true',
+          });
+          if (!me.login) {
+            core.notice(
+              'OrcaCode Review: github-token is an App installation token that is not this job\'s own, and ' +
+              'bot-login is not set — the action will learn its identity from its first post in this run, ' +
+              'so a notice from an earlier run is posted again rather than edited. Set bot-login: "<app>[bot]".',
+            );
           }
-          core.setOutput('bot_login', botLogin);
+          core.setOutput('bot_login', me.login);
           core.setOutput('base', base);
           core.setOutput('head_sha', headSha);
           core.setOutput('number', String(num));
@@ -732,11 +754,10 @@ runs:
           // the OrcaRouter key and the GitHub token from what it sends.
           const guard = await import(require('url').pathToFileURL(process.env.PUBLISH_GUARD).href);
           const gh = guard.guardGithub(github);
-          // A marker counts only in a comment the action's own identity wrote.
-          // With no resolved identity nothing matches: post anew, edit nothing.
-          const mine = (c) =>
-            Boolean(process.env.BOT_LOGIN) && Boolean(c && c.body) &&
-            Boolean(c.user) && c.user.login === process.env.BOT_LOGIN;
+          // A marker counts only in a comment the action's own identity wrote
+          // (guard.isOwn — scripts/identity.mjs). Unknown identity matches
+          // nothing: post anew, edit and delete nothing.
+          const mine = guard.isOwn;
           const brand = process.env.BRAND;
           const num = Number(process.env.PR_NUMBER);
           const repo = { owner: context.repo.owner, repo: context.repo.repo };
@@ -907,11 +928,10 @@ runs:
           // the OrcaRouter key and the GitHub token from what it sends.
           const guard = await import(require('url').pathToFileURL(process.env.PUBLISH_GUARD).href);
           const gh = guard.guardGithub(github);
-          // A marker counts only in a comment the action's own identity wrote.
-          // With no resolved identity nothing matches: post anew, edit nothing.
-          const mine = (c) =>
-            Boolean(process.env.BOT_LOGIN) && Boolean(c && c.body) &&
-            Boolean(c.user) && c.user.login === process.env.BOT_LOGIN;
+          // A marker counts only in a comment the action's own identity wrote
+          // (guard.isOwn — scripts/identity.mjs). Unknown identity matches
+          // nothing: post anew, edit and delete nothing.
+          const mine = guard.isOwn;
           const brand = process.env.BRAND;
           const num = Number(process.env.PR_NUMBER);
           const repo = { owner: context.repo.owner, repo: context.repo.repo };
@@ -1534,11 +1554,10 @@ runs:
           // the OrcaRouter key and the GitHub token from what it sends.
           const guard = await import(require('url').pathToFileURL(process.env.PUBLISH_GUARD).href);
           const gh = guard.guardGithub(github);
-          // A marker counts only in a comment the action's own identity wrote.
-          // With no resolved identity nothing matches: post anew, edit nothing.
-          const mine = (c) =>
-            Boolean(process.env.BOT_LOGIN) && Boolean(c && c.body) &&
-            Boolean(c.user) && c.user.login === process.env.BOT_LOGIN;
+          // A marker counts only in a comment the action's own identity wrote
+          // (guard.isOwn — scripts/identity.mjs). Unknown identity matches
+          // nothing: post anew, edit and delete nothing.
+          const mine = guard.isOwn;
           const fs = require('fs');
           let block;
           try {
@@ -1955,11 +1974,10 @@ runs:
           // the OrcaRouter key and the GitHub token from what it sends.
           const guard = await import(require('url').pathToFileURL(process.env.PUBLISH_GUARD).href);
           const gh = guard.guardGithub(github);
-          // A marker counts only in a comment the action's own identity wrote.
-          // With no resolved identity nothing matches: post anew, edit nothing.
-          const mine = (c) =>
-            Boolean(process.env.BOT_LOGIN) && Boolean(c && c.body) &&
-            Boolean(c.user) && c.user.login === process.env.BOT_LOGIN;
+          // A marker counts only in a comment the action's own identity wrote
+          // (guard.isOwn — scripts/identity.mjs). Unknown identity matches
+          // nothing: post anew, edit and delete nothing.
+          const mine = guard.isOwn;
           const fs = require('fs');
           const { execFileSync } = require('child_process');
           const { pathToFileURL } = require('url');
@@ -2213,6 +2231,9 @@ runs:
       if: always() && steps.pr.outputs.run == 'true'
       shell: bash
       env:
+        # Who the action is (scripts/identity.mjs): resolved, or recorded from
+        # its first post in this run. Only that login's 👀 is ours to clear.
+        BOT_LOGIN: ${{ steps.pr.outputs.bot_login }}
         GH_TOKEN: ${{ inputs.github-token }}
         REPO: ${{ github.repository }}
         PR_NUMBER: ${{ steps.pr.outputs.number }}
@@ -2247,20 +2268,22 @@ runs:
           echo "github-token belongs to a user, not an app; leaving reactions alone"
           exit 0
         fi
-        # SAME TRAP AS THE TYPE PROBE, and it survived the fix to that one: with an
-        # installation token `gh api user` can exit 0 and print nothing, so
-        # `|| echo` never fires and ME came back EMPTY. The delete filter then read
-        # `select(.user.login=="")`, matched nothing, and the 👀 stayed on the PR
-        # for ever while the step reported success. Observed on a clean run that
-        # placed both 👀 and 👍 and cleared neither.
-        #
-        # Test the VALUE, not the exit status.
-        ME=$(gh api user --jq .login 2>/dev/null) || ME=""
-        [ -n "$ME" ] || ME="github-actions[bot]"
+        # WHOSE 👀: the identity funnel's answer (scripts/identity.mjs) — the
+        # login "Resolve PR refs" resolved, else the one recorded from the
+        # action's first post in this run. This used to fall back to
+        # github-actions[bot] for any installation token, which for a custom App
+        # cleared nothing of its own (and would have cleared the workflow bot's).
+        # Unknown clears nothing.
+        ME="${BOT_LOGIN:-}"
+        if [ -z "$ME" ] && [ -s "$RUNNER_TEMP/cr-identity" ]; then ME=$(cat "$RUNNER_TEMP/cr-identity"); fi
+        case "$ME" in
+          ""|*[!A-Za-z0-9\[\]-]*) ME="" ;;
+        esac
 
         # ------------------------------------------------------------------
         # 👀 — it said "I am looking at this", and the run has stopped looking.
         clear_eyes() {
+          [ -n "$ME" ] || { echo "identity unknown — leaving 👀 at $1"; return 0; }
           ids=$(gh api "$1" --paginate \
             --jq '.[] | select(.content=="eyes") | select(.user.login=="'"$ME"'") | .id' \
             2>/dev/null || true)
@@ -2333,7 +2356,7 @@ runs:
           "$RUNNER_TEMP/pr.diff" "$RUNNER_TEMP/diff-guard.json" "$RUNNER_TEMP/prev-summary.md" \
           "$RUNNER_TEMP/wallclock-timeout" "$RUNNER_TEMP/judge-unavailable" \
           "$RUNNER_TEMP/cr-usage.jsonl" \
-          "$RUNNER_TEMP/cr-clean" \
+          "$RUNNER_TEMP/cr-clean" "$RUNNER_TEMP/cr-identity" \
           "$RUNNER_TEMP/result.l1.json" "$RUNNER_TEMP/result.l2.json" \
           "$RUNNER_TEMP/result-extra.l1.json" "$RUNNER_TEMP/result-extra.l2.json" \
           "$RUNNER_TEMP/result.l2.log" "$RUNNER_TEMP/result-extra.l2.log"

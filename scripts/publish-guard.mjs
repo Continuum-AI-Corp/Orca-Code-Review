@@ -31,6 +31,9 @@
 //                                the fragment left open so it cannot swallow, or
 //                                be closed by, the text after it.
 //   codeSpan(text)           a file path as inline code that cannot break out.
+//   isOwn(comment)           whether a comment is the action's own (its markers
+//                            count only there) — the identity funnel,
+//                            scripts/identity.mjs.
 //   guardGithub(github)      wraps the github-script client so every posting
 //                            call (comments, reviews, the PR description, commit
 //                            statuses, check runs) has the OrcaRouter key and the
@@ -43,6 +46,10 @@
 // treating text as code would let HTML through. It is held to what a real
 // CommonMark + GFM renderer makes of its output, over a corpus and a seeded
 // fuzz, by scripts/sanitizer-render.test.mjs.
+
+import { isOwn, ownLogin, recordIdentity } from "./identity.mjs";
+
+export { isOwn, ownLogin };
 
 export const MAX_FINDING_CHARS = 3000;
 export const MAX_POSTED_FINDINGS = 50;
@@ -398,6 +405,10 @@ export function redactSecrets(text, secrets = []) {
 export const defaultSecrets = () =>
   [process.env.CR_REDACT_API_KEY, process.env.CR_REDACT_GITHUB_TOKEN].filter(Boolean);
 
+// Which calls create a comment or review whose author GitHub reports back —
+// how an App token's identity is learned when nothing else could tell it.
+const CREATES = { issues: ["createComment"], pulls: ["createReview", "createReviewComment"] };
+
 // Which calls post text, and which of their fields carry it.
 const POSTING = {
   issues: ["createComment", "updateComment"],
@@ -426,7 +437,11 @@ export function guardGithub(github, { secrets = defaultSecrets() } = {}) {
       get(target, prop, recv) {
         const v = Reflect.get(target, prop, recv);
         if (typeof v === "function" && POSTING[name]?.includes(prop)) {
-          return (args, ...rest) => v.call(target, redactArgs(args, secrets), ...rest);
+          return async (args, ...rest) => {
+            const res = await v.call(target, redactArgs(args, secrets), ...rest);
+            if (CREATES[name]?.includes(prop)) recordIdentity(res);
+            return res;
+          };
         }
         return v;
       },

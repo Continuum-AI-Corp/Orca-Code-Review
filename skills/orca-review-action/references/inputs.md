@@ -22,6 +22,7 @@ about the App from this file.
 | --- | --- | --- |
 | `orcarouter-url` | `https://api.orcarouter.ai/v1/chat/completions` | Chat-completions endpoint. Change only for a self-hosted gateway. From v1.7.0 (unreleased) it must be https (plain http is accepted only to this machine's loopback). |
 | `github-token` | `${{ github.token }}` | Fetches the PR head, posts review comments, and reacts to a `/orcacode-review` command. From v1.7.0 (unreleased) it also writes the commit status on the PR head, which needs `statuses: write`. |
+| `bot-login` | `""` | From v1.7.0 (unreleased). The login the action posts as when `github-token` is a GitHub App's installation token other than the job's own (e.g. `my-app[bot]`); it recognises its earlier notices by it. Not needed for the default `github.token` or a personal token. |
 | `brand` | `OrcaCode Review` | Name shown on PR comments. |
 | `router` | `orcarouter/orcacode-review` | Router alias that owns model selection. The action names no models: it injects raw facts (`x-cr-prev-tier`, `x-cr-prev-p0p1`) and this router's DSL recipe maps them to a concrete model. |
 | `engine-version` | `1.3.13` | Pinned `@alibaba-group/open-code-review` version. From v1.7.0 (unreleased), only versions whose checksums the action pins (`scripts/engine-pins.json`) install — any other value fails the run. |

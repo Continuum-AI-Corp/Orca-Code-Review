@@ -21,7 +21,7 @@ import path from "node:path";
 import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
 
-import { step, actionSteps, runBashStep, runGithubScript, fakeCore } from "./test-helpers/action-yaml.mjs";
+import { step, actionSteps, runBashStep, runGithubScript, fakeCore, ROOT } from "./test-helpers/action-yaml.mjs";
 
 let dir;
 before(() => {
@@ -46,7 +46,12 @@ async function resolve(eventName, payload) {
     repo: { owner: "acme", repo: "widgets" },
     issue: { number: payload.issue?.number ?? payload.pull_request?.number ?? 0 },
   };
-  await runGithubScript(step("pr").with.script, { github, context, core });
+  await runGithubScript(step("pr").with.script, {
+    github,
+    context,
+    core,
+    env: { IDENTITY: path.join(ROOT, "scripts", "identity.mjs"), TOKEN_IS_JOB_TOKEN: "true", BOT_LOGIN_INPUT: "" },
+  });
   return rec;
 }
 

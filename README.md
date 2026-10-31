@@ -269,13 +269,14 @@ From v1.7.0 (unreleased), the action also writes an **`OrcaCode Review`** commit
 
 ## Upgrading: what changes from v1.7.0 (unreleased)
 
-Security hardening that changes what you may see. The installer, the example workflow and the quickstart above still pin **v1.6.0**, so none of this applies until you pin the release that ships it. Inputs are unchanged except for two new ones; defaults that close a hole are new.
+Security hardening that changes what you may see. The installer, the example workflow and the quickstart above still pin **v1.6.0**, so none of this applies until you pin the release that ships it. Inputs are unchanged except for three new ones; defaults that close a hole are new.
 
 | What changed | What you will notice | To keep the old behaviour |
 | --- | --- | --- |
 | `auto-review-authors` unset on a **public** repo now means `OWNER,MEMBER,COLLABORATOR` (private repos: everyone, as before) | Fork PRs from outsiders are no longer auto-reviewed on your wallet; a maintainer can `/orcacode-review` them | `auto-review-authors: "OWNER,MEMBER,COLLABORATOR,CONTRIBUTOR,FIRST_TIME_CONTRIBUTOR,FIRST_TIMER,MANNEQUIN,NONE"` (`"*"` works too from v1.7.0 (unreleased), but v1.6.0 reads it as nobody) |
 | New `status-context` (default `"OrcaCode Review"`) | A commit status on the PR head after every run, on-demand runs included: green only for a reviewed head whose gate passed; a skipped review is **"Not reviewed"**. Grant `statuses: write`; require this status instead of the `review` job | `status-context: ""` |
 | New `on-skipped-review` (default `"pass"`) | Nothing, by default: a skipped review still passes the job. `"fail"` fails the job on a skip too | — |
+| New `bot-login` (default `""`) | Only for a custom GitHub App token: name its login (`"my-app[bot]"`) so the action recognises its earlier notices and edits them instead of posting new ones | — |
 | Comment commands are checked by the action | `/orcacode-review` from anyone but an owner, member or collaborator, or any other comment, is a no-op | — |
 | A settings fetch that gets no settings — a 4xx (an ordinary, non-CI key gets one on every run) or an outage | The workflow's inputs apply for that run, exactly as with `settings: "false"`, and the log names the cause. `block-on` in the workflow is the outage floor: set it to what the dashboard enforces if an outage must not loosen the gate | — |
 | The gate fails closed | A result the gate cannot read now fails the check instead of passing | — |

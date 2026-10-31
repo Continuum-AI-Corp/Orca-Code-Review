@@ -1618,13 +1618,16 @@ runs:
             }
           }
 
-          // Mirror the enforce step's verdict: gate.mjs on the final result
-          // (exit 0 = a BLOCK_ON severity is present).
-          let blocked;
+          // Mirror the enforce step's verdict: gate.mjs on the final result.
+          // Only exit 10 ("no BLOCK_ON finding") is a pass; a match (0) and a
+          // gate that could not decide (any other code) are what the enforce
+          // step fails on, so the summary must not announce a pass for them.
+          let blocked = true;
           try {
             execFileSync('node', [process.env.GATE, process.env.RESULT, '--has', process.env.BLOCK_ON], { stdio: 'pipe' });
-            blocked = true;
-          } catch { blocked = false; }
+          } catch (e) {
+            if (e && e.status === 10) blocked = false;
+          }
           // One tier, one name. This used to report `strong`, from when a cheap
           // pass could escalate to a strong one; with a single pass the label was
           // a leftover that made per-tier figures meaningless.
@@ -1668,11 +1671,28 @@ runs:
         # ALWAYS the unfiltered result — quiet mode never weakens the gate.
         RESULT: ${{ runner.temp }}/result.json
       run: |
-        if node "$GATE" "$RESULT" --has "$BLOCK_ON"; then
-          echo "::error::$BRAND: blocking — found $BLOCK_ON severity finding(s)."
-          exit 1
-        fi
-        echo "$BRAND: no $BLOCK_ON findings — gate passed."
+        # gate.mjs answers 0 (a blocking finding) or 10 (none). ANYTHING ELSE is
+        # a gate that could not decide — a crash exits 1, an unreadable result 3,
+        # a killed process 128+n — and none of those is evidence of a clean
+        # review, so the merge gate fails closed on them.
+        GATE_RC=0
+        node "$GATE" "$RESULT" --has "$BLOCK_ON" || GATE_RC=$?
+        case "$GATE_RC" in
+          0)
+            echo "verdict=blocked" >> "${GITHUB_OUTPUT:-/dev/null}"
+            echo "::error::$BRAND: blocking — found $BLOCK_ON severity finding(s)."
+            exit 1
+            ;;
+          10)
+            echo "verdict=pass" >> "${GITHUB_OUTPUT:-/dev/null}"
+            echo "$BRAND: no $BLOCK_ON findings — gate passed."
+            ;;
+          *)
+            echo "verdict=error" >> "${GITHUB_OUTPUT:-/dev/null}"
+            echo "::error::$BRAND: the severity gate could not decide (gate.mjs exited $GATE_RC) — failing closed."
+            exit 1
+            ;;
+        esac
 
     # Best-effort run counters to the OrcaRouter control plane — severity
     # counts and the gate verdict only, never code (see README "Run
@@ -1694,10 +1714,13 @@ runs:
         ORCAROUTER_API_KEY: ${{ inputs.orcarouter-api-key }}
         ENGINE_VERSION: ${{ inputs.engine-version }}
       run: |
-        # The verdict re-uses gate.mjs on the snapshot
-        # (exit 0 = a BLOCK_ON severity is present = blocked).
-        GATE_RESULT=pass
-        if node "$GATE" "$RESULT_FINAL" --has "$BLOCK_ON"; then GATE_RESULT=blocked; fi
+        # The verdict re-uses gate.mjs on the snapshot. Only its "no match"
+        # answer (exit 10) is a pass; a match (0) and a gate that could not
+        # decide (anything else) are both what the enforce step blocked on.
+        GATE_RESULT=blocked
+        GATE_RC=0
+        node "$GATE" "$RESULT_FINAL" --has "$BLOCK_ON" || GATE_RC=$?
+        if [ "$GATE_RC" = "10" ]; then GATE_RESULT=pass; fi
         node "$REPORT" "$RESULT_FINAL" \
           --repo "$REPO" --pr "$PR_NUMBER" --sha "$HEAD_SHA" \
           --tier standard --gate "$GATE_RESULT" \

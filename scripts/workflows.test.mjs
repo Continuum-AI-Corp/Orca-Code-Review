@@ -8,7 +8,9 @@
 //   CR-6   A workflow-level concurrency group with cancel-in-progress let ANY
 //          comment cancel an in-flight review (each comment starts a run in the
 //          same group, which then skips). Concurrency is per job now, and
-//          comment runs have a group of their own that never cancels.
+//          comment runs have a group of their own that never cancels a running
+//          job (GitHub still replaces a PENDING one with a newer comment's —
+//          doc-drift.test.mjs holds the docs to saying so).
 
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";

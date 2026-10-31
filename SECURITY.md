@@ -91,8 +91,10 @@ approval to run workflows from fork PRs" gate. The review key is wallet-metered.
   `COLLABORATOR` — whatever the workflow's `if:` says. The shipped workflows
   gate the same way in their `if:`, which also saves the runner.
 - **Cancelling**: concurrency is per job in the shipped workflows, and comment
-  runs have their own group that never cancels, so a comment cannot cancel an
-  in-flight review.
+  runs have their own group with `cancel-in-progress` off, so a comment cannot
+  cancel an in-flight review. GitHub keeps one running and one pending job per
+  group: a newer `/orcacode-review` replaces a comment run that is still
+  pending, never one that is running.
 - **Set a wallet budget with alerts** on the review key. This is the hard spend
   ceiling, and it is mandatory for public repositories.
 

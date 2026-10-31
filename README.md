@@ -284,7 +284,7 @@ Security hardening that changes what you may see. The installer, the example wor
 | What is posted is sanitised | @mentions don't ping, HTML is shown as text, off-site links are shown as code, at most 50 findings are posted per review, guardrail details are hidden on public repos | — |
 | The checkout is hardened | Symlinks are removed, the PR's `.gitattributes` cannot hide the diff, the base `.gitignore` applies; the summary lists changed files the engine skips | — |
 | Severity is never lowered | Duplicates keep the most severe tag; the judge cannot drop a P0 or a security finding | — |
-| Shipped workflows | Per-job concurrency (a comment cannot cancel a review), re-run on `reopened` and on a retargeted base (`edited`), `statuses: write`, the action pinned to a commit SHA | Update your copy from [`workflows/orca-code-review.yml`](workflows/orca-code-review.yml) |
+| Shipped workflows | Per-job concurrency (a comment cannot cancel a running review; a newer comment replaces only a comment run still pending), re-run on `reopened` and on a retargeted base (`edited`), `statuses: write`, the action pinned to a commit SHA | Update your copy from [`workflows/orca-code-review.yml`](workflows/orca-code-review.yml) |
 
 Self-hosted runners need git 2.31 or newer for private-repository fetches (the token travels in `GIT_CONFIG_*` environment variables, not on git's command line).
 

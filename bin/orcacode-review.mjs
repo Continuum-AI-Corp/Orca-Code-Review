@@ -415,7 +415,9 @@ jobs:
     # cancel-in-progress let ANY comment on the PR cancel an in-flight review:
     # every comment starts a run in the same group, which then skips. Push runs
     # share one group per PR and a newer push supersedes an older one; comment
-    # runs (/orcacode-review) get their own group and never cancel anything.
+    # runs (/orcacode-review) get their own group and never cancel a running
+    # review. GitHub keeps one running and one pending job per group, so a newer
+    # comment does replace a comment run still pending — the latest one runs.
     concurrency:
       group: \${{ github.workflow }}-\${{ github.event_name == 'issue_comment' && 'comment' || 'pr' }}-\${{ github.event.pull_request.number || github.event.issue.number }}
       cancel-in-progress: \${{ github.event_name != 'issue_comment' }}

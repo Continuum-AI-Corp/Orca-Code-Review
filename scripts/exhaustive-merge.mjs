@@ -28,6 +28,7 @@
 // wiring bug in action.yml and must be loud.
 
 import fs from "node:fs";
+import { severityOf, moreSevere, withSeverity } from "./severity.mjs";
 
 const usage = () => {
   console.error("usage: node exhaustive-merge.mjs --base <a.json> --new <b.json> --out <merged.json>");
@@ -80,16 +81,30 @@ if (!base && !fresh) {
 } else if (!fresh) {
   merged = base; // fresh pass unusable — keep what we have, stop the loop
 } else {
-  const seen = new Set(base.comments.map(keyOf));
-  const appended = [];
+  // A repeat of a finding already in hand is not new — but if this pass rates
+  // it MORE severe, the kept copy takes the higher tag. The key ignores the tag
+  // on purpose (a re-run re-tags), so without this a P0 that the first pass
+  // called P3 would be discarded as a duplicate of the P3.
+  const all = [...base.comments];
+  const index = new Map(all.map((c, i) => [keyOf(c), i]));
+  let upgraded = 0;
   for (const c of fresh.comments) {
     const key = keyOf(c);
-    if (seen.has(key)) continue;
-    seen.add(key); // dupes INSIDE the fresh pass collapse too
-    appended.push(c);
+    if (index.has(key)) {
+      const i = index.get(key);
+      const sev = moreSevere(severityOf(all[i]), severityOf(c));
+      if (sev !== severityOf(all[i])) {
+        all[i] = withSeverity(all[i], sev);
+        upgraded += 1;
+      }
+      continue;
+    }
+    index.set(key, all.length); // dupes INSIDE the fresh pass collapse too
+    all.push(c);
+    newFindings += 1;
   }
-  newFindings = appended.length;
-  merged = { ...base, comments: [...base.comments, ...appended] };
+  if (upgraded) console.error(`exhaustive-merge: ${upgraded} finding(s) raised to a more severe tag by this pass`);
+  merged = { ...base, comments: all };
 }
 
 fs.writeFileSync(opts.out, JSON.stringify(merged));

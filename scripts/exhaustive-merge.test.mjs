@@ -74,13 +74,25 @@ describe("dedup key: file + line + normalized content", () => {
     assert.equal(r.merged.comments.length, 1);
   });
 
-  test("severity-tag variants collapse (tag stripped before hashing) — the base's tag wins", () => {
+  // This used to pin "the base's tag wins", which let a P0 from an extra pass
+  // be discarded as a duplicate of the first pass's P2 — the merge lowered a
+  // blocker. The variants still collapse into one finding; it now carries the
+  // more severe of the two tags, and a LESS severe repeat changes nothing.
+  test("severity-tag variants collapse (tag stripped before hashing) — the more severe tag wins", () => {
     const r = runMerge(
       { comments: [comment("a.js", 3, "[P2] null deref on user")] },
       { comments: [comment("a.js", 3, "[P0] null deref on user")] },
     );
     assert.deepEqual(r.counts, { new_findings: 0 });
-    assert.equal(r.merged.comments[0].content, "[P2] null deref on user");
+    assert.equal(r.merged.comments[0].content, "[P0] null deref on user");
+  });
+
+  test("a less severe repeat never lowers the base's tag", () => {
+    const r = runMerge(
+      { comments: [comment("a.js", 3, "[P0] null deref on user")] },
+      { comments: [comment("a.js", 3, "[P3] null deref on user")] },
+    );
+    assert.equal(r.merged.comments[0].content, "[P0] null deref on user");
   });
 
   test("a genuinely-new finding is counted and appended AFTER the base (order preserved)", () => {

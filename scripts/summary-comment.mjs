@@ -4,6 +4,10 @@
 //   node summary-comment.mjs <result.json> --tier cheap|strong --push <n>
 //     --gate pass|blocked [--prev <file with the previous comment body>]
 //     [--passes <n>] [--quiet] [--block-on P0,P1] [--excluded <file.json>]
+//     [--lockfiles <file.json>]
+//
+// --lockfiles names guard-diff.mjs's list of changed lockfiles the diff-size
+// limit did not count (the engine still read them); listed the same way.
 //
 // --excluded names excluded-files.mjs's output: the changed files the engine
 // skips (tests, fixtures, generated code, binaries, unsupported types). They
@@ -82,6 +86,7 @@ for (let i = 0; i < rest.length; i += 1) {
   else if (rest[i] === "--quiet") opts.quiet = true;
   else if (rest[i] === "--block-on") opts.blockOn = rest[++i];
   else if (rest[i] === "--excluded") opts.excluded = rest[++i];
+  else if (rest[i] === "--lockfiles") opts.lockfiles = rest[++i];
   // NO else: an unrecognised flag, and the value that follows it, are skipped
   // one token at a time. That is what makes removing --fix-first safe to ship
   // ahead of the caller that still passes it — the pair falls through without
@@ -204,6 +209,23 @@ if (skipped.excluded.length) {
   );
   if (skipped.omitted) lines.push("", `…and ${skipped.omitted} more.`);
   lines.push("", "</details>");
+}
+
+// Lockfiles the diff-size limit did not count (guard-diff.mjs). Best-effort.
+let lockfiles = [];
+if (opts.lockfiles) {
+  try {
+    const j = JSON.parse(fs.readFileSync(opts.lockfiles, "utf8"));
+    if (Array.isArray(j.lockfiles)) lockfiles = j.lockfiles.slice(0, 50);
+  } catch {
+    /* no list */
+  }
+}
+if (lockfiles.length) {
+  lines.push(
+    "",
+    `Lockfiles not counted toward the diff-size limit: ${lockfiles.map((p) => `\`${cell(p, 200)}\``).join(", ")}.`,
+  );
 }
 
 process.stdout.write(`${lines.join("\n")}\n`);

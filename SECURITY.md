@@ -32,7 +32,11 @@ before the engine):
   tools outside the repository;
 - **takes `diff` away from the PR's `.gitattributes`** (`* !diff` in
   `$GIT_DIR/info/attributes`), so `* -diff` cannot turn the change into "Binary
-  files differ" for the size guard and the engine;
+  files differ" for the size guard and the engine. The size guard then leaves
+  out files named like a standard lockfile (`package-lock.json`, `go.sum`, …) —
+  by name, never by an attribute the PR sets, and leaving a file out of the
+  count can only make the guard review more; the summary lists them, and the
+  engine still reads them;
 - **removes `.opencodereview/`** and **restores the base revision's root
   `.gitignore`**, so PR-controlled configuration cannot exclude the PR's own
   changes from review.

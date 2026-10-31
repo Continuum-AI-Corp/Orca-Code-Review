@@ -301,7 +301,7 @@ runs:
           "$RUNNER_TEMP/pr.diff" "$RUNNER_TEMP/diff-guard.json" "$RUNNER_TEMP/prev-summary.md" \
           "$RUNNER_TEMP/wallclock-timeout" "$RUNNER_TEMP/judge-unavailable" \
           "$RUNNER_TEMP/cr-usage.jsonl" \
-          "$RUNNER_TEMP/cr-clean" "$RUNNER_TEMP/cr-identity" \
+          "$RUNNER_TEMP/cr-clean" "$RUNNER_TEMP/cr-identity" "$RUNNER_TEMP/cr-lockfiles.json" \
           "$RUNNER_TEMP/result.l1.json" "$RUNNER_TEMP/result.l2.json" \
           "$RUNNER_TEMP/result-extra.l1.json" "$RUNNER_TEMP/result-extra.l2.json" \
           "$RUNNER_TEMP/result.l2.log" "$RUNNER_TEMP/result-extra.l2.log"
@@ -881,6 +881,8 @@ runs:
         BASE: origin/${{ steps.pr.outputs.base }}
         HEAD: ${{ steps.pr.outputs.head_sha }}
         GUARD: ${{ github.action_path }}/scripts/diff-guard.mjs
+        GUARD_DIFF: ${{ github.action_path }}/scripts/guard-diff.mjs
+        LOCKFILES_FILE: ${{ runner.temp }}/cr-lockfiles.json
         MAX_KB: ${{ inputs.max-diff-kb }}
         MAX_FILES: ${{ inputs.max-diff-files }}
         DIFF_FILE: ${{ runner.temp }}/pr.diff
@@ -888,20 +890,24 @@ runs:
       run: |
         # Size-check the SAME range the engine reviews (merge-base diff),
         # BEFORE anything is installed or run: an oversized PR should cost
-        # nothing. `--merge-base` needs git >= 2.30; fall back to the
-        # equivalent three-dot form, then fail OPEN (empty file -> "review")
-        # if no diff can be produced — a guard glitch must never kill the job.
-        git diff --merge-base "$BASE" "$HEAD" > "$DIFF_FILE" 2>/dev/null \
-          || git diff "$BASE...$HEAD" > "$DIFF_FILE" 2>/dev/null \
-          || { echo "::warning::$BRAND: diff generation failed — size guard failing open."; : > "$DIFF_FILE"; }
+        # nothing — minus the files named like a standard lockfile, which the
+        # hardened checkout's `* !diff` would otherwise count in full (see
+        # scripts/guard-diff.mjs; they are listed in the summary). The engine
+        # still reads the full diff. Fails OPEN (empty file -> "review") if no
+        # diff can be produced — a guard glitch must never kill the job.
+        node "$GUARD_DIFF" --base "$BASE" --head "$HEAD" --out "$DIFF_FILE" --lockfiles "$LOCKFILES_FILE"
         node "$GUARD" --diff "$DIFF_FILE" --max-kb "$MAX_KB" --max-files "$MAX_FILES" > "$GUARD_JSON"
         cat "$GUARD_JSON"
         node -e '
           const fs = require("fs");
           const g = JSON.parse(fs.readFileSync(process.env.GUARD_JSON, "utf8"));
+          let lockfiles = 0;
+          try {
+            lockfiles = JSON.parse(fs.readFileSync(process.env.LOCKFILES_FILE, "utf8")).lockfiles.length;
+          } catch {}
           fs.appendFileSync(
             process.env.GITHUB_OUTPUT,
-            `decision=${g.decision}\nreason=${g.reason}\nsize_kb=${g.size_kb}\nfiles=${g.files}\n`,
+            `decision=${g.decision}\nreason=${g.reason}\nsize_kb=${g.size_kb}\nfiles=${g.files}\nlockfiles=${lockfiles}\n`,
           );
         '
 
@@ -1971,6 +1977,8 @@ runs:
         PASSES: ${{ steps.review.outputs.passes }}
         # Changed files the engine skips (excluded-files.mjs, Harden step).
         EXCLUDED_FILE: ${{ runner.temp }}/cr-excluded.json
+        # Lockfiles the size guard did not count (guard-diff.mjs).
+        LOCKFILES_FILE: ${{ runner.temp }}/cr-lockfiles.json
         # Every post goes through scripts/publish-guard.mjs: `gh` redacts these
         # two values (in every encoding) from whatever it sends.
         PUBLISH_GUARD: ${{ github.action_path }}/scripts/publish-guard.mjs
@@ -2070,6 +2078,10 @@ runs:
           // What this verdict does not cover: the changed files the engine skips.
           if (process.env.EXCLUDED_FILE && fs.existsSync(process.env.EXCLUDED_FILE)) {
             args.push('--excluded', process.env.EXCLUDED_FILE);
+          }
+          // And the lockfiles the size limit did not count.
+          if (process.env.LOCKFILES_FILE && fs.existsSync(process.env.LOCKFILES_FILE)) {
+            args.push('--lockfiles', process.env.LOCKFILES_FILE);
           }
 
           const summaryMd = execFileSync('node', args, { encoding: 'utf8' });
@@ -2366,7 +2378,7 @@ runs:
           "$RUNNER_TEMP/pr.diff" "$RUNNER_TEMP/diff-guard.json" "$RUNNER_TEMP/prev-summary.md" \
           "$RUNNER_TEMP/wallclock-timeout" "$RUNNER_TEMP/judge-unavailable" \
           "$RUNNER_TEMP/cr-usage.jsonl" \
-          "$RUNNER_TEMP/cr-clean" "$RUNNER_TEMP/cr-identity" \
+          "$RUNNER_TEMP/cr-clean" "$RUNNER_TEMP/cr-identity" "$RUNNER_TEMP/cr-lockfiles.json" \
           "$RUNNER_TEMP/result.l1.json" "$RUNNER_TEMP/result.l2.json" \
           "$RUNNER_TEMP/result-extra.l1.json" "$RUNNER_TEMP/result-extra.l2.json" \
           "$RUNNER_TEMP/result.l2.log" "$RUNNER_TEMP/result-extra.l2.log"

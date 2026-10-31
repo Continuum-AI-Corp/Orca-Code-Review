@@ -57,7 +57,7 @@ command too, and an unset allowlist means maintainers only on a public repo.
 
 | Input | Default | What it does |
 | --- | --- | --- |
-| `max-diff-kb` | `5000` | Skip the review when the merge-base diff exceeds this size. Raised from 512 so large PRs are reviewed rather than refused; the real ceiling is the model context window, which this cannot see. |
+| `max-diff-kb` | `5000` | Skip the review when the merge-base diff exceeds this size. Raised from 512 so large PRs are reviewed rather than refused; the real ceiling is the model context window, which this cannot see. From v1.7.0 (unreleased), files named like a standard lockfile (`package-lock.json`, `yarn.lock`, `go.sum`, `Cargo.lock`, …) are not counted here or in `max-diff-files`; the summary lists them. |
 | `max-diff-files` | `2000` | Skip when the diff touches more files than this. Raised from 300. |
 | `on-oversized-diff` | `fail` | What a skip does to the check. `fail` means a diff padded past the limits cannot bypass a required gate. `pass` restores advisory behavior. |
 

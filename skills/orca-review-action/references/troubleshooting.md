@@ -135,4 +135,7 @@ green job is that.
 From v1.7.0 (unreleased) the action itself honours the command only on a pull
 request, only as the start of the comment, and only from `OWNER`, `MEMBER` or
 `COLLABORATOR`, whatever the workflow's `if:` says. Anyone else's command is a
-logged no-op.
+logged no-op. On a PR from a fork the command must also name the head commit —
+`/orcacode-review <sha>` (7+ hex characters) — and that commit must still be the
+head; otherwise the action replies on the PR with the current head and the
+command to use.

@@ -246,6 +246,10 @@ account for most reports:
   the dashboard. The job passes; a maintainer's `/orcacode-review` reviews the head.
   From v1.7.0 (unreleased) the `OrcaCode Review` status reads "Not reviewed" until a
   review runs, and `on-skipped-review: "fail"` fails the job too.
+- **`/orcacode-review` answered with "name the commit"** — from v1.7.0 (unreleased), on
+  a PR from a fork the command must name the head commit (`/orcacode-review <sha>`)
+  and that commit must still be the head. Read the new commits, then use the command
+  the reply gives.
 - **Run fails immediately, auth error** — `ORCAROUTER_API_KEY` is missing, misnamed, or
   scoped to an environment the job cannot read.
 - **"Diff too large" notice and a red check** — expected behavior with

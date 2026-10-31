@@ -140,6 +140,8 @@ const UNRELEASED_BEHAVIOURS = [
   [/action (itself )?(refuses|ignores|honou?rs)[^.|]*(command|comment)/i, "the action's own comment-command check"],
   // v1.6.0 installs whatever engine-version names, unverified.
   [/engine-pins/, "the pinned engine checksums"],
+  // v1.6.0 reviews whatever head a fork PR has when a command's run starts.
+  [/orcacode-review <(sha|commit)/i, "the commit-pinned command on a fork PR"],
   // v1.6.0 judges only the PR's author, never who pushed.
   [/\bpusher\b|push(ed|es)? to a fork PR/i, "the pusher check"],
   // v1.6.0 runs on whatever event the workflow wires it to.

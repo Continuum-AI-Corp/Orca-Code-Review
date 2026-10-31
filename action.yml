@@ -329,6 +329,12 @@ runs:
       uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
       env:
         IDENTITY: ${{ github.action_path }}/scripts/identity.mjs
+        BRAND: ${{ inputs.brand }}
+        # A refused fork-PR command is answered with a comment, through the one
+        # posting funnel like everything else the action posts.
+        PUBLISH_GUARD: ${{ github.action_path }}/scripts/publish-guard.mjs
+        CR_REDACT_API_KEY: ${{ inputs.orcarouter-api-key }}
+        CR_REDACT_GITHUB_TOKEN: ${{ inputs.github-token }}
         BOT_LOGIN_INPUT: ${{ inputs.bot-login }}
         # "true" when github-token is the job's own GITHUB_TOKEN — the one
         # installation token whose author (github-actions[bot]) is known.
@@ -364,13 +370,17 @@ runs:
               `pull_request / pull_request_target (${PR_ACTIONS.join(', ')}) and issue_comment (created)`,
             );
           }
+          let commandArg = '';
           if (context.eventName === 'issue_comment') {
             const c = payload.comment || {};
             const body = String(c.body || '').toLowerCase();
             const assoc = String(c.author_association || 'NONE').toUpperCase();
             // The command, then the end of the comment or whitespace — so
             // "/orcacode-reviewer" is not the command.
-            const isCommand = COMMANDS.some((cmd) => body.startsWith(cmd) && /^(\s|$)/.test(body.slice(cmd.length)));
+            const used = COMMANDS.find((cmd) => body.startsWith(cmd) && /^(\s|$)/.test(body.slice(cmd.length)));
+            const isCommand = Boolean(used);
+            // The word after it: the commit a fork PR's command must name.
+            if (used) commandArg = body.slice(used.length).trim().split(/\s+/)[0] || '';
             if (!payload.issue || !payload.issue.pull_request) return stop('the comment is not on a pull request');
             if (!isCommand) return stop('the comment is not the review command');
             if (!TRUSTED.includes(assoc)) {
@@ -398,6 +408,49 @@ runs:
             isDraft = pr.draft === true;
             authorAssoc = pr.author_association || 'NONE';
           }
+          const headRepo = prData && prData.head && prData.head.repo ? prData.head.repo.full_name : null;
+          const baseRepo = `${context.repo.owner}/${context.repo.repo}`;
+          const fromFork = String(headRepo || '').toLowerCase() !== baseRepo.toLowerCase();
+
+          // A COMMAND REVIEWS THE COMMIT THE MAINTAINER SAW. A fork's owner can
+          // push between a maintainer reading the change and the run starting,
+          // so on a fork PR the command must name the head commit
+          // (`/orcacode-review <sha, 7+ hex>`), and it is reviewed only while it
+          // is still the head — the checkout below pins that exact SHA. A
+          // same-repository PR keeps the bare command; a commit it names is held
+          // to the same check. A refusal answers on the PR and runs nothing.
+          if (context.eventName === 'issue_comment') {
+            const named = /^[0-9a-f]{7,40}$/.test(commandArg) ? commandArg : '';
+            const now = String(headSha).slice(0, 7);
+            let refusal = '';
+            let why = '';
+            if (fromFork && !named) {
+              why = 'the pull request comes from a fork, and the command did not name the commit to review';
+              refusal =
+                `This pull request's head is in another repository (a fork), so a review on demand has to ` +
+                `name the commit it is for — the fork can push between your comment and the review.\n\n` +
+                `The head is now \`${now}\`. Check that it is the code you mean, then comment:\n\n` +
+                `\`/orcacode-review ${now}\``;
+            } else if (named && !String(headSha).toLowerCase().startsWith(named)) {
+              why = `the command named ${named}, which is no longer the pull request's head (${now})`;
+              refusal =
+                `\`/orcacode-review ${named}\` names a commit that is no longer this pull request's head, so ` +
+                `nothing was reviewed. The head is now \`${now}\`. Check the new commits, then comment:\n\n` +
+                `\`/orcacode-review ${now}\``;
+            }
+            if (refusal) {
+              try {
+                const guard = await import(require('url').pathToFileURL(process.env.PUBLISH_GUARD).href);
+                await guard.guardGithub(github).rest.issues.createComment({
+                  owner: context.repo.owner, repo: context.repo.repo, issue_number: num,
+                  body: `## 🐳 ${process.env.BRAND || 'OrcaCode Review'}\n\n${refusal}`,
+                });
+              } catch (e) {
+                core.warning(`OrcaCode Review: could not post the refusal (${e.status || e.message}).`);
+              }
+              return stop(why);
+            }
+          }
           core.setOutput('run', 'true');
 
           // THE AUTHOR IS NOT THE PUSHER. author_association is the PR author's,
@@ -409,12 +462,9 @@ runs:
           // "n/a" = nothing to ask; "false" also when GitHub cannot say.
           let pusher = '';
           let pusherTrusted = 'n/a';
-          const headRepo = prData && prData.head && prData.head.repo ? prData.head.repo.full_name : null;
-          const baseRepo = `${context.repo.owner}/${context.repo.repo}`;
           const author = prData && prData.user ? prData.user.login : '';
           const sender = payload.sender ? payload.sender.login : '';
-          if (context.eventName !== 'issue_comment' && payload.action === 'synchronize' &&
-              String(headRepo || '').toLowerCase() !== baseRepo.toLowerCase() && sender !== author) {
+          if (context.eventName !== 'issue_comment' && payload.action === 'synchronize' && fromFork && sender !== author) {
             pusher = sender || '(unknown)';
             pusherTrusted = 'false';
             if (sender) {

@@ -109,7 +109,12 @@ approval to run workflows from fork PRs" gate. The review key is wallet-metered.
   itself refuses a comment-triggered run unless the comment is on a pull
   request, is the review command, and its author is `OWNER`, `MEMBER` or
   `COLLABORATOR` — whatever the workflow's `if:` says. The shipped workflows
-  gate the same way in their `if:`, which also saves the runner.
+  gate the same way in their `if:`, which also saves the runner. On a PR whose
+  head lives in a fork, the command must name the commit
+  (`/orcacode-review <sha>`, 7+ hex characters): the action reviews exactly
+  that commit and only while it is still the head, so a fork cannot push
+  between the maintainer's reading and the review; otherwise it replies with
+  the current head and runs nothing.
 - **Cancelling**: concurrency is per job in the shipped workflows, and comment
   runs have their own group with `cancel-in-progress` off, so a comment cannot
   cancel an in-flight review. GitHub keeps one running and one pending job per

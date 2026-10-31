@@ -36,7 +36,11 @@ async function resolve(eventName, payload) {
   const github = {
     rest: {
       pulls: {
-        get: async () => ({ data: { base: { ref: "main" }, head: { sha: "headsha" }, draft: false, author_association: "NONE" } }),
+        // A same-repository PR: a fork's command must name its commit
+        // (comment-sha.test.mjs).
+        get: async () => ({
+          data: { base: { ref: "main" }, head: { sha: "headsha", repo: { full_name: "acme/widgets" } }, draft: false, author_association: "NONE" },
+        }),
       },
     },
   };

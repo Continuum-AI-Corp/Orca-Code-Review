@@ -251,7 +251,7 @@ Comment on any PR:
 
 to request another review. Only an **owner, member or collaborator** can: the workflow's `if:` ignores the command from anyone else.
 
-From v1.7.0 (unreleased) the action itself ignores an outsider's command too, whatever the workflow says, and the verdict lands on the PR's head commit as the `OrcaCode Review` status.
+From v1.7.0 (unreleased) the action itself ignores an outsider's command too, whatever the workflow says, and the verdict lands on the PR's head commit as the `OrcaCode Review` status. On a PR **from a fork**, name the commit you looked at — `/orcacode-review <sha>`, at least 7 characters of it: the action reviews exactly that commit, and only while it is still the PR's head, so the fork cannot push something else in between. A bare command there, or a commit that is no longer the head, gets a reply with the current head and the command to use. Same-repository PRs keep the bare command.
 
 ---
 

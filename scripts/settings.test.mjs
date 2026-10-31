@@ -53,6 +53,12 @@ const DEFAULTS = {
   rubric: "",
 };
 
+// On an envelope failure every value is a stand-in, and the file says so: the
+// action must be able to tell "the dashboard said P0,P1" from "the dashboard
+// could not be asked", because only the first may loosen a gate.
+const ALL_FIELDS = Object.keys(DEFAULTS);
+const FALLBACK = { ...DEFAULTS, unresolved: ALL_FIELDS };
+
 const listen = (server) =>
   new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(server.address().port)));
 
@@ -158,8 +164,8 @@ describe("settings: fail-open to defaults (must never kill reviews)", () => {
       const r = await run(SETTINGS, baseArgs(gw.port, out));
       assert.equal(r.status, 0, "a settings outage must not fail the job");
       assert.equal(gw.seen.length, 2, "exactly one retry");
-      assert.deepEqual(JSON.parse(readFileSync(out, "utf8")), DEFAULTS);
-      assert.deepEqual(JSON.parse(r.stdout), DEFAULTS);
+      assert.deepEqual(JSON.parse(readFileSync(out, "utf8")), FALLBACK);
+      assert.deepEqual(JSON.parse(r.stdout), FALLBACK);
       assert.match(r.stderr, /default/i, "the fallback must be noted on stderr");
     } finally {
       await gw.close();
@@ -175,7 +181,7 @@ describe("settings: fail-open to defaults (must never kill reviews)", () => {
     const out = outPath();
     const r = await run(SETTINGS, baseArgs(deadPort, out));
     assert.equal(r.status, 0);
-    assert.deepEqual(JSON.parse(readFileSync(out, "utf8")), DEFAULTS);
+    assert.deepEqual(JSON.parse(readFileSync(out, "utf8")), FALLBACK);
     assert.match(r.stderr, /default/i);
   });
 
@@ -185,7 +191,7 @@ describe("settings: fail-open to defaults (must never kill reviews)", () => {
     try {
       const r = await run(SETTINGS, baseArgs(gw.port, out));
       assert.equal(r.status, 0);
-      assert.deepEqual(JSON.parse(readFileSync(out, "utf8")), DEFAULTS);
+      assert.deepEqual(JSON.parse(readFileSync(out, "utf8")), FALLBACK);
     } finally {
       await gw.close();
     }
@@ -197,7 +203,7 @@ describe("settings: fail-open to defaults (must never kill reviews)", () => {
     try {
       const r = await run(SETTINGS, baseArgs(gw.port, out));
       assert.equal(r.status, 0);
-      assert.deepEqual(JSON.parse(readFileSync(out, "utf8")), DEFAULTS);
+      assert.deepEqual(JSON.parse(readFileSync(out, "utf8")), FALLBACK);
     } finally {
       await gw.close();
     }
@@ -206,7 +212,7 @@ describe("settings: fail-open to defaults (must never kill reviews)", () => {
   test("missing required flags -> defaults printed to stdout, exit 0", async () => {
     const r = await run(SETTINGS, ["--url", "http://127.0.0.1:1/v1"]);
     assert.equal(r.status, 0);
-    assert.deepEqual(JSON.parse(r.stdout), DEFAULTS);
+    assert.deepEqual(JSON.parse(r.stdout), FALLBACK);
     assert.match(r.stderr, /usage/i);
   });
 
@@ -216,7 +222,7 @@ describe("settings: fail-open to defaults (must never kill reviews)", () => {
       "--url", "not a url", "--repo", "a/b", "--out", out,
     ]);
     assert.equal(r.status, 0);
-    assert.deepEqual(JSON.parse(readFileSync(out, "utf8")), DEFAULTS);
+    assert.deepEqual(JSON.parse(readFileSync(out, "utf8")), FALLBACK);
   });
 });
 
@@ -250,6 +256,9 @@ describe("settings: field-wise fallback on invalid values", () => {
         block_on: "P0,P1",
         report_on: "P0,P1",
         rubric: "",
+        // Every field that fell back is named: block_on in particular, whose
+        // default is LOOSER than many a dashboard value it stands in for.
+        unresolved: ["quiet", "trigger", "fix_first", "block_on", "report_on", "rubric"],
       });
       assert.match(r.stderr, /trigger/, "field fallbacks must be noted on stderr");
       assert.equal(gw.seen.length, 1, "field-level problems are server values — no retry");

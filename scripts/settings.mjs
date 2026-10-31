@@ -22,6 +22,14 @@
 //     rubric) -> that FIELD falls back to its default while valid fields are
 //     kept; no retry (re-asking won't change a value the server meant).
 //
+// EVERY STAND-IN IS NAMED. Whenever a value in the file is a default standing
+// in for one the server did not give us — every field on an envelope failure,
+// the one field on a field failure — that field is listed in `unresolved`
+// (absent when the server answered every field validly). block_on's default
+// (P0,P1) is LOOSER than many a dashboard value it may replace, so the action
+// reads this list and refuses to let a stand-in loosen the merge gate: an
+// unresolved block_on blocks on every severity unless the workflow pins one.
+//
 // Severity lists are normalized (trim + uppercase); an explicit empty string
 // is VALID and means "none" (e.g. block_on:"" = never block). A whitespace-
 // only rubric is treated as empty (no override). 5s timeout per attempt.
@@ -83,10 +91,13 @@ function normalizeSeverityList(v) {
 // noted on stderr; valid fields are kept.
 function validateSettings(data) {
   const out = { ...DEFAULTS };
-  const fallback = (field, got) =>
+  const unresolved = [];
+  const fallback = (field, got) => {
+    unresolved.push(field);
     console.error(
       `settings: field "${field}" invalid (${JSON.stringify(got)}) — using default ${JSON.stringify(DEFAULTS[field])}`,
     );
+  };
 
   for (const field of ["auto_review", "exhaustive", "quiet"]) {
     if (typeof data[field] === "boolean") out[field] = data[field];
@@ -126,8 +137,12 @@ function validateSettings(data) {
     fallback("rubric", data.rubric);
   }
 
-  return out;
+  return unresolved.length ? { ...out, unresolved } : out;
 }
+
+// The built-in defaults, marked as stand-ins for every field: what an envelope
+// failure (or no usable arguments at all) writes.
+const fallbackSettings = () => ({ ...DEFAULTS, unresolved: Object.keys(DEFAULTS) });
 
 // One settings fetch. Throws on any envelope problem — the caller retries.
 async function fetchOnce(endpoint, key) {
@@ -149,7 +164,7 @@ async function resolveSettings(opts) {
     endpoint = `${controlPlaneBase(opts.url)}/api/code_review/settings?repo=${encodeURIComponent(opts.repo)}`;
   } catch (e) {
     console.error(`settings: bad --url (${e.message}) — using built-in defaults`);
-    return { ...DEFAULTS };
+    return fallbackSettings();
   }
 
   for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
@@ -160,8 +175,10 @@ async function resolveSettings(opts) {
     }
     if (attempt < ATTEMPTS) await new Promise((r) => setTimeout(r, RETRY_PAUSE_MS));
   }
-  console.error("settings: giving up — using built-in defaults (fail-open, reviews continue)");
-  return { ...DEFAULTS };
+  console.error(
+    "settings: giving up — using built-in defaults (reviews continue; the action will not let them loosen block_on)",
+  );
+  return fallbackSettings();
 }
 
 async function main() {
@@ -183,7 +200,7 @@ async function main() {
       "settings: usage: ORCAROUTER_API_KEY=<key> node settings.mjs --url U --repo owner/name --out path.json " +
         "(fail-open — printing built-in defaults and exiting 0)",
     );
-    settings = { ...DEFAULTS };
+    settings = fallbackSettings();
   } else {
     settings = await resolveSettings(opts);
   }
@@ -206,7 +223,7 @@ main().then(
   () => process.exit(0),
   (e) => {
     console.error(`settings: ${e.message} — using built-in defaults`);
-    process.stdout.write(`${JSON.stringify(DEFAULTS)}\n`);
+    process.stdout.write(`${JSON.stringify(fallbackSettings())}\n`);
     process.exit(0);
   },
 );

@@ -377,8 +377,9 @@ runs:
     # Dashboard-driven behavior, fetched from the gateway BEFORE anything is
     # cloned or installed: a settings-skip should cost nothing. settings.mjs
     # always exits 0 and falls back to the built-in defaults on any outage
-    # (fail-open — a settings hiccup must never kill reviews); this step's own
-    # parsing falls back the same way, so `decision` is always review|skip.
+    # (a settings hiccup must never kill reviews), naming every stand-in in
+    # `unresolved`. Reviews stay fail-open; the merge gate does not: an
+    # unresolved block_on blocks on every severity unless the workflow pins it.
     - name: Fetch review settings
       id: settings
       shell: bash
@@ -396,6 +397,7 @@ runs:
         IS_DRAFT: ${{ steps.pr.outputs.is_draft }}
         AUTHOR_ASSOC: ${{ steps.pr.outputs.author_association }}
         AUTO_REVIEW_AUTHORS: ${{ inputs.auto-review-authors }}
+        BRAND: ${{ inputs.brand }}
       run: |
         # The auto-event gate is defined UP FRONT — before the settings-disabled
         # short-circuit — so BOTH the settings-disabled (workflow-file-
@@ -507,11 +509,28 @@ runs:
         REPORT_ON=$(setting report_on "P0,P1")
         RUBRIC=$(setting rubric "")
 
+        # Which values are stand-ins for ones the dashboard did not give us.
+        # settings.mjs names them in `unresolved`; a file that cannot be read at
+        # all (settings.mjs died before writing it) means every value is one.
+        UNRESOLVED=$(node -pe 'const s=JSON.parse(require("fs").readFileSync(process.env.SETTINGS_JSON,"utf8")); (Array.isArray(s.unresolved)?s.unresolved:[]).join(",")' 2>/dev/null) \
+          || UNRESOLVED="unreadable"
+
         # PRECEDENCE (documented in the README): an explicit `with:` input that
         # DIFFERS from the action's documented default ("P0,P1") wins over the
         # server settings; an input left at the default defers to the server.
         if [ "$INPUT_FIX_FIRST" != "P0,P1" ]; then FIX_FIRST="$INPUT_FIX_FIRST"; fi
-        if [ "$INPUT_BLOCK_ON" != "P0,P1" ]; then BLOCK_ON="$INPUT_BLOCK_ON"; fi
+        if [ "$INPUT_BLOCK_ON" != "P0,P1" ]; then
+          BLOCK_ON="$INPUT_BLOCK_ON"
+        elif [ "$UNRESOLVED" = "unreadable" ] || printf ',%s,' "$UNRESOLVED" | grep -q ',block_on,'; then
+          # THE WORKFLOW DEFERS TO THE DASHBOARD AND THE DASHBOARD COULD NOT BE
+          # READ. Its block_on is unknown, and the built-in P0,P1 standing in for
+          # it may be looser than what the workspace set — an outage must never
+          # be the thing that lets a P2 through a gate configured to block it.
+          # So block on every severity for this run: an outage can only tighten
+          # the gate. Pin `block-on:` in the workflow to use your own value.
+          BLOCK_ON="P0,P1,P2,P3"
+          echo "::warning::$BRAND: the OrcaRouter dashboard settings could not be read, so its block-on is unknown — blocking on every severity (P0,P1,P2,P3) for this run. Set block-on in the workflow to choose the outage value yourself."
+        fi
 
         # A non-empty server rubric REPLACES rules/severity-instruction.md as
         # the --background content; it is exposed as a file path only when set.

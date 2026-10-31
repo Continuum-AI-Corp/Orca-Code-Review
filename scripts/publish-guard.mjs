@@ -16,10 +16,15 @@
 //                                link, image or reference definition forms, and
 //                                defangs every bare URL into inline code unless
 //                                it points into this repository or the
-//                                OrcaRouter docs host;
+//                                OrcaRouter docs host (then it is emitted as an
+//                                explicit `<…>` autolink, so nothing after it can
+//                                extend it);
 //                              - neutralises @mentions with a zero-width joiner;
-//                              - demotes heading and setext lines, so a finding
-//                                cannot print "## OrcaCode Review ✅ No findings";
+//                              - demotes heading and setext lines — inside list
+//                                items and quotes too — so a finding cannot
+//                                print "## OrcaCode Review ✅ No findings", and
+//                                keeps tables from forming (a table row would cut
+//                                a code span open at a `|`);
 //                              - caps the length;
 //                              - leaves inline code and fenced blocks alone
 //                                (code quotes keep their `<`), and closes a fence
@@ -34,7 +39,9 @@
 //
 // The tokenizer errs one way only: whatever it is unsure is code, it treats as
 // text and escapes. Treating real code as text costs a cosmetic `&lt;`;
-// treating text as code would let HTML through.
+// treating text as code would let HTML through. It is held to what a real
+// CommonMark + GFM renderer makes of its output, over a corpus and a seeded
+// fuzz, by scripts/sanitizer-render.test.mjs.
 
 export const MAX_FINDING_CHARS = 3000;
 export const MAX_POSTED_FINDINGS = 50;
@@ -71,7 +78,13 @@ export function codeSpan(text, max = 300) {
   return `\`${neutraliseMentions(v) || " "}\``;
 }
 
+// Characters an allowed URL may carry when it is emitted as a live link. Any
+// other (a bracket, a backtick, a backslash, a quote) could change what the
+// renderer makes of the text around it, so such a URL is shown as code.
+const SAFE_URL_CHARS = /^[A-Za-z0-9\-._~:/?#@!$&'()*+,;=%]+$/;
+
 function allowedUrl(raw, { repo, serverUrl }) {
+  if (!SAFE_URL_CHARS.test(raw)) return false;
   let u;
   try {
     u = new URL(/^www\./i.test(raw) ? `https://${raw}` : raw);
@@ -93,55 +106,111 @@ function allowedUrl(raw, { repo, serverUrl }) {
   return p === prefix || p.startsWith(`${prefix}/`);
 }
 
-const URL_RE = /(?:[a-z][a-z0-9+.-]*:\/\/|www\.)[^\s<]*/gi;
+// A URL as GFM's autolink literal sees it: a scheme or `www.`, then everything
+// up to whitespace or `<` — backticks included, so a URL glued to a code span
+// swallows the span's opening backticks in the renderer. The tokenizer below
+// therefore takes a URL run BEFORE it looks for code spans inside it.
+const URL_AT = /(?:[a-z][a-z0-9+.-]*:\/\/|www\.)[^\s<]*/iy;
 
-// Escape one run of plain (non-code) text on ONE line.
-function escapeText(t, opts) {
-  let out = "";
-  let last = 0;
-  for (const m of t.matchAll(URL_RE)) {
-    // Trailing punctuation is not part of the link (GFM's rule): a sentence's
-    // full stop or a markdown link's closing parenthesis stays outside.
-    let url = m[0];
-    for (;;) {
-      if (/[?!.,:;*_~'"]$/.test(url)) url = url.slice(0, -1);
-      else if (url.endsWith(")") && (url.match(/\(/g) || []).length < (url.match(/\)/g) || []).length) url = url.slice(0, -1);
-      else break;
-    }
-    out += escapePlain(t.slice(last, m.index));
-    out += allowedUrl(url, opts) ? url : codeSpan(url, 400);
-    last = m.index + url.length;
+// Trailing punctuation is not part of the link (GFM's rule): a sentence's
+// full stop or a markdown link's closing parenthesis stays outside.
+function trimUrl(raw) {
+  let url = raw;
+  for (;;) {
+    if (/[?!.,:;*_~'"]$/.test(url)) url = url.slice(0, -1);
+    else if (url.endsWith(")") && (url.match(/\(/g) || []).length < (url.match(/\)/g) || []).length) url = url.slice(0, -1);
+    else break;
   }
-  return out + escapePlain(t.slice(last));
+  return url;
 }
-const escapePlain = (t) => t.replace(/</g, "&lt;").replace(/\[/g, "\\[").replace(/\]/g, "\\]");
 
-// One line outside any fenced block: inline code spans (open AND close on this
-// line — a multi-line span is treated as text, the safe direction) pass
-// through; everything else is escaped.
+// CommonMark's backslash escapes: `\` before ASCII punctuation makes it
+// literal; before anything else the backslash is itself literal.
+const ASCII_PUNCT = /[!-/:-@[-`{-~]/;
+
+// Escape plain text. A backslash pair the fragment wrote (`\[`, `\\`, `\``) is
+// already an escape and is kept as one — doubling its backslash would turn it
+// into a literal backslash followed by a LIVE `[`. Any other backslash is
+// doubled, so it can never escape a character the sanitizer adds after it
+// (the backtick of a defanged URL's code span). A backtick here is a lone run
+// (a code span that closes on this line is passed through by sanitizeLine), and
+// is escaped so it cannot pair with a backtick the sanitizer adds.
+function escapePlain(t) {
+  let out = "";
+  for (let i = 0; i < t.length; i += 1) {
+    const ch = t[i];
+    if (ch === "\\") {
+      if (i + 1 < t.length && ASCII_PUNCT.test(t[i + 1])) {
+        out += ch + t[i + 1];
+        i += 1;
+      } else out += "\\\\";
+    } else if (ch === "<") out += "&lt;";
+    else if (ch === "[" || ch === "]" || ch === "`") out += `\\${ch}`;
+    else out += ch;
+  }
+  return out;
+}
+
+// What may open a line before a block that matters: indentation, blockquote
+// markers and list markers, nested in any order (`> - 1. `). A heading or a
+// setext underline after them is still a heading, inside the container.
+const CONTAINER_PREFIX = /^(?:[ \t]*(?:>|(?:[-+*]|\d{1,9}[.)])(?=[ \t]|$)))*[ \t]*/;
+
+// One line outside any fenced block, tokenised the way the renderer reads it:
+//   - a backslash escapes the next character only when that is ASCII
+//     punctuation (`\\` is an escaped backslash, so a backtick after it is
+//     real); otherwise it is a literal backslash;
+//   - a URL run (see URL_AT) is taken whole: a link only when it points into
+//     this repository or the docs host, emitted as an explicit `<…>` autolink
+//     so nothing after it can extend it; anything else is shown as code;
+//   - an inline code span that opens AND closes on this line passes through
+//     (a multi-line span is treated as text, the safe direction);
+//   - everything else is escaped.
+// No span the sanitizer emits is glued to a backtick before it: two runs that
+// touch merge into one longer run and re-pair every span after them.
 function sanitizeLine(line, atLineStart, opts) {
   let body = line;
   let lead = "";
   if (atLineStart) {
-    // Headings and setext underlines: a finding must not forge structure.
-    if (/^ {0,3}#/.test(body)) {
-      const i = body.indexOf("#");
-      lead = `${body.slice(0, i)}\\`;
-      body = body.slice(i);
-    } else if (/^ {0,3}(=+|-{2,})[ \t]*$/.test(body)) {
-      const i = body.search(/[=-]/);
-      lead = `${body.slice(0, i)}\\`;
-      body = body.slice(i);
+    // Headings, setext underlines (of ANY length — `foo` over a lone `-` is an
+    // <h2>) and tilde fences a container would own: a finding must not forge
+    // structure. The first significant character is escaped, at any depth of
+    // indentation and inside any container. Over-escaping an indented code
+    // line costs a visible backslash; under-escaping prints a heading.
+    // (Backtick fences need no rule here: a lone backtick run is escaped.)
+    //
+    // And no TABLE: a table row splits its cells on `|` even inside a code
+    // span, which would cut open a span this function emits or passes through
+    // (a defanged URL, a quoted `a|<img>`). A table needs a delimiter row
+    // (`|---|:-:|`) under its header; escaping that row's first character
+    // means no table forms, and every span stays whole.
+    const whole = body.match(/^[ \t]*(?=(=+|-+)[ \t]*$)/);
+    const prefix = whole ? whole[0] : body.match(CONTAINER_PREFIX)[0];
+    const restOf = body.slice(prefix.length);
+    const delimiterRow = /^[|:-][ \t|:-]*$/.test(restOf) && /-/.test(restOf);
+    if (whole || delimiterRow || /^(#|(=+|-+)[ \t]*$|~~~)/.test(restOf)) {
+      lead = `${prefix}\\`;
+      body = restOf;
     }
   }
-  let out = "";
+  let out = lead;
   let text = "";
+  const flush = () => {
+    out += escapePlain(text);
+    text = "";
+  };
+  const emit = (span) => {
+    flush();
+    if (span.startsWith("`") && out.endsWith("`")) out += " ";
+    out += span;
+  };
   let i = 0;
   while (i < body.length) {
     const ch = body[i];
-    if (ch === "\\" && body[i + 1] === "`") {
-      text += "\\`";
-      i += 2;
+    if (ch === "\\") {
+      const pair = i + 1 < body.length && ASCII_PUNCT.test(body[i + 1]);
+      text += body.slice(i, pair ? i + 2 : i + 1);
+      i += pair ? 2 : 1;
       continue;
     }
     if (ch === "`") {
@@ -162,19 +231,30 @@ function sanitizeLine(line, atLineStart, opts) {
         } else j += 1;
       }
       if (close < 0) {
-        text += "`".repeat(n); // a lone run is literal text
+        text += "`".repeat(n); // a lone run is literal text (escapePlain escapes it)
         i += n;
         continue;
       }
-      out += escapeText(text, opts) + body.slice(i, close + n);
-      text = "";
+      emit(body.slice(i, close + n));
       i = close + n;
       continue;
+    }
+    if (/[a-z]/i.test(ch)) {
+      URL_AT.lastIndex = i;
+      const m = URL_AT.exec(body);
+      const url = m ? trimUrl(m[0]) : "";
+      if (url && /:\/\/|^www\./i.test(url)) {
+        if (allowedUrl(url, opts)) emit(`<${/^www\./i.test(url) ? `https://${url}` : url}>`);
+        else emit(codeSpan(url, 400));
+        i += url.length;
+        continue;
+      }
     }
     text += ch;
     i += 1;
   }
-  return lead + out + escapeText(text, opts);
+  flush();
+  return out;
 }
 
 /**
@@ -204,8 +284,12 @@ export function sanitizeUntrusted(text, { repo, serverUrl, atLineStart = true, m
       out.push(line);
       continue;
     }
+    // A fence is trusted only at column 0. Indented by 1-3 spaces it may belong
+    // to a list item, where the renderer closes it at the first line that is
+    // not indented — while this loop would still pass that line through raw.
+    // Such an opener is escaped instead (sanitizeLine), so it opens nothing.
     if (lineStart) {
-      const open = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+      const open = line.match(/^(`{3,}|~{3,})(.*)$/);
       if (open && !(open[1][0] === "`" && open[2].includes("`"))) {
         fence = { ch: open[1][0], n: open[1].length };
         out.push(line);

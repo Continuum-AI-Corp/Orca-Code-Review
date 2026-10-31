@@ -573,9 +573,19 @@ runs:
         BRAND: ${{ inputs.brand }}
         PR_NUMBER: ${{ steps.pr.outputs.number }}
         REASON: ${{ steps.settings.outputs.reason }}
+        # Every post goes through scripts/publish-guard.mjs: `gh` redacts these
+        # two values (in every encoding) from whatever it sends.
+        PUBLISH_GUARD: ${{ github.action_path }}/scripts/publish-guard.mjs
+        CR_REDACT_API_KEY: ${{ inputs.orcarouter-api-key }}
+        CR_REDACT_GITHUB_TOKEN: ${{ inputs.github-token }}
       with:
         github-token: ${{ inputs.github-token }}
         script: |
+          // THE ONE POSTING FUNNEL (scripts/publish-guard.mjs): every comment,
+          // review, description and status goes out through `gh`, which redacts
+          // the OrcaRouter key and the GitHub token from what it sends.
+          const guard = await import(require('url').pathToFileURL(process.env.PUBLISH_GUARD).href);
+          const gh = guard.guardGithub(github);
           const brand = process.env.BRAND;
           const num = Number(process.env.PR_NUMBER);
           const repo = { owner: context.repo.owner, repo: context.repo.repo };
@@ -586,7 +596,7 @@ runs:
             `Route Smarter. Ship Safer. Spend Less.</sub>`;
           const body =
             `${MARKER}\n## 🐳 ${brand}\n\n` +
-            `⏸️ **Automatic review is off for this PR** (${process.env.REASON}).\n\n` +
+            `⏸️ **Automatic review is off for this PR** (${guard.sanitizeUntrusted(process.env.REASON, { atLineStart: false, maxChars: 300 })}).\n\n` +
             `The check **passes** — this never blocks your merge. A maintainer can still ` +
             `run a review on demand by commenting \`/orcacode-review\` ` +
             `(\`@orcacode review\` works too), or change the ` +
@@ -598,10 +608,10 @@ runs:
           });
           const existing = comments.find((c) => c.body && c.body.includes(MARKER));
           if (!existing) {
-            await github.rest.issues.createComment({ ...repo, issue_number: num, body });
+            await gh.rest.issues.createComment({ ...repo, issue_number: num, body });
           } else if (existing.body !== body) {
             // Only when the reason changed (e.g. on_demand -> draft).
-            await github.rest.issues.updateComment({ ...repo, comment_id: existing.id, body });
+            await gh.rest.issues.updateComment({ ...repo, comment_id: existing.id, body });
           }
 
           await core.summary.addRaw(`skipped: ${process.env.REASON}`).write();
@@ -707,9 +717,19 @@ runs:
         MAX_KB: ${{ inputs.max-diff-kb }}
         MAX_FILES: ${{ inputs.max-diff-files }}
         ON_OVERSIZED: ${{ inputs.on-oversized-diff }}
+        # Every post goes through scripts/publish-guard.mjs: `gh` redacts these
+        # two values (in every encoding) from whatever it sends.
+        PUBLISH_GUARD: ${{ github.action_path }}/scripts/publish-guard.mjs
+        CR_REDACT_API_KEY: ${{ inputs.orcarouter-api-key }}
+        CR_REDACT_GITHUB_TOKEN: ${{ inputs.github-token }}
       with:
         github-token: ${{ inputs.github-token }}
         script: |
+          // THE ONE POSTING FUNNEL (scripts/publish-guard.mjs): every comment,
+          // review, description and status goes out through `gh`, which redacts
+          // the OrcaRouter key and the GitHub token from what it sends.
+          const guard = await import(require('url').pathToFileURL(process.env.PUBLISH_GUARD).href);
+          const gh = guard.guardGithub(github);
           const brand = process.env.BRAND;
           const num = Number(process.env.PR_NUMBER);
           const repo = { owner: context.repo.owner, repo: context.repo.repo };
@@ -728,10 +748,10 @@ runs:
               `diff cannot slip through a required merge gate.`;
           const body =
             `${MARKER}\n## 🐳 ${brand}\n\n` +
-            `⏭️ **Review skipped — this PR's diff is too large** (${process.env.REASON}).\n\n` +
+            `⏭️ **Review skipped — this PR's diff is too large** (${guard.sanitizeUntrusted(process.env.REASON, { atLineStart: false, maxChars: 300 })}).\n\n` +
             `| | This PR | Limit |\n|---|---|---|\n` +
-            `| Diff size | ${process.env.SIZE_KB} KB | ${process.env.MAX_KB} KB |\n` +
-            `| Files touched | ${process.env.FILES} | ${process.env.MAX_FILES} |\n\n` +
+            `| Diff size | ${Number(process.env.SIZE_KB)} KB | ${Number(process.env.MAX_KB)} KB |\n` +
+            `| Files touched | ${Number(process.env.FILES)} | ${Number(process.env.MAX_FILES)} |\n\n` +
             `The review engine was **not** run — reviews of very large diffs truncate and ` +
             `lose signal — ${outcome}\n\n` +
             `**What now?** Split the PR (smaller diffs get much higher-signal reviews), raise ` +
@@ -744,9 +764,9 @@ runs:
           });
           const existing = comments.find((c) => c.body && c.body.includes(MARKER));
           if (existing) {
-            await github.rest.issues.updateComment({ ...repo, comment_id: existing.id, body });
+            await gh.rest.issues.updateComment({ ...repo, comment_id: existing.id, body });
           } else {
-            await github.rest.issues.createComment({ ...repo, issue_number: num, body });
+            await gh.rest.issues.createComment({ ...repo, issue_number: num, body });
           }
 
           await core.summary.addRaw(`skipped: diff too large (${process.env.REASON})`).write();
@@ -1303,9 +1323,21 @@ runs:
         BRAND: ${{ inputs.brand }}
         PR_NUMBER: ${{ steps.pr.outputs.number }}
         POLICY_BLOCK: ${{ runner.temp }}/policy-block.json
+        # "true" only on a private repository; anything else is treated as public.
+        REPO_PRIVATE: ${{ github.event.repository.private }}
+        # Every post goes through scripts/publish-guard.mjs: `gh` redacts these
+        # two values (in every encoding) from whatever it sends.
+        PUBLISH_GUARD: ${{ github.action_path }}/scripts/publish-guard.mjs
+        CR_REDACT_API_KEY: ${{ inputs.orcarouter-api-key }}
+        CR_REDACT_GITHUB_TOKEN: ${{ inputs.github-token }}
       with:
         github-token: ${{ inputs.github-token }}
         script: |
+          // THE ONE POSTING FUNNEL (scripts/publish-guard.mjs): every comment,
+          // review, description and status goes out through `gh`, which redacts
+          // the OrcaRouter key and the GitHub token from what it sends.
+          const guard = await import(require('url').pathToFileURL(process.env.PUBLISH_GUARD).href);
+          const gh = guard.guardGithub(github);
           const fs = require('fs');
           let block;
           try {
@@ -1322,14 +1354,25 @@ runs:
           // it once a clean review posts.
           const MARKER = '<!-- orca-code-review-block -->';
           const layer = block.kind === 'firewall' ? 'firewall' : 'guardrail';
-          const policyLine = block.policyName
-            ? `\n\n**Policy:** \`${String(block.policyName).slice(0, 120)}\``
+          // ON A PUBLIC REPOSITORY THE NOTICE IS GENERIC. The policy's name and
+          // the text it matched describe the workspace's security configuration
+          // (and may quote what it caught); on a public PR anyone can read them,
+          // including the author probing which rule to evade. Private repos keep
+          // the detail, sanitised. Unknown visibility counts as public.
+          const isPrivate = process.env.REPO_PRIVATE === 'true';
+          const policyLine = isPrivate && block.policyName
+            ? `\n\n**Policy:** ${guard.codeSpan(block.policyName, 120)}`
             : '';
-          const detail = block.detail ? String(block.detail).slice(0, 300) : '';
+          const detail = isPrivate && block.detail
+            ? guard.sanitizeUntrusted(String(block.detail), { atLineStart: false, maxChars: 300 })
+            : '';
           const matchedLine = detail ? `\n\n**Matched:** ${detail}` : '';
-          const idTag = block.requestId
-            ? ` · request id \`${String(block.requestId).slice(0, 80)}\``
+          const idTag = isPrivate && block.requestId
+            ? ` · request id ${guard.codeSpan(block.requestId, 80)}`
             : '';
+          if (!isPrivate) {
+            console.log(`${layer} block (details withheld from the public PR; see the OrcaRouter dashboard)`);
+          }
           const footer =
             `\n\n<sub>[OrcaCode Review](https://www.orcarouter.ai/code-review) — ` +
             `Route Smarter. Ship Safer. Spend Less.${idTag}</sub>`;
@@ -1355,9 +1398,9 @@ runs:
           });
           const existing = existingComments.find((c) => c.body && c.body.includes(MARKER));
           if (!existing) {
-            await github.rest.issues.createComment({ ...repo, issue_number: num, body });
+            await gh.rest.issues.createComment({ ...repo, issue_number: num, body });
           } else if (existing.body !== body) {
-            await github.rest.issues.updateComment({ ...repo, comment_id: existing.id, body });
+            await gh.rest.issues.updateComment({ ...repo, comment_id: existing.id, body });
           }
 
     # What gets POSTED is decoupled from what gets ENFORCED: this step always
@@ -1436,9 +1479,19 @@ runs:
         # to declare a run clean put "No findings" and a 👍 on a pull request
         # whose own summary listed the findings three lines above.
         RESULT_FOUND: ${{ runner.temp }}/result-reported.json
+        # Every post goes through scripts/publish-guard.mjs: `gh` redacts these
+        # two values (in every encoding) from whatever it sends.
+        PUBLISH_GUARD: ${{ github.action_path }}/scripts/publish-guard.mjs
+        CR_REDACT_API_KEY: ${{ inputs.orcarouter-api-key }}
+        CR_REDACT_GITHUB_TOKEN: ${{ inputs.github-token }}
       with:
         github-token: ${{ inputs.github-token }}
         script: |
+          // THE ONE POSTING FUNNEL (scripts/publish-guard.mjs): every comment,
+          // review, description and status goes out through `gh`, which redacts
+          // the OrcaRouter key and the GitHub token from what it sends.
+          const guard = await import(require('url').pathToFileURL(process.env.PUBLISH_GUARD).href);
+          const gh = guard.guardGithub(github);
           const fs = require('fs');
           const brand = process.env.BRAND;
           const num = Number(process.env.PR_NUMBER);
@@ -1514,13 +1567,13 @@ runs:
               `## 🐳 ${brand}\n\n` +
               `✅ **No findings** — nothing to flag in this PR. Great work!`;
             try {
-              await github.rest.pulls.createReview({
+              await gh.rest.pulls.createReview({
                 ...repo, pull_number: num, commit_id: sha,
                 body: cleanBody + footer, event: 'COMMENT',
               });
             } catch (e) {
               console.log('Clean review failed, posting as a comment:', e.message);
-              await github.rest.issues.createComment({
+              await gh.rest.issues.createComment({
                 ...repo, issue_number: num, body: cleanBody + footer,
               });
             }
@@ -1547,13 +1600,29 @@ runs:
           // lowercase fragments). So we split on just two reliable signals: a
           // model-written **bold** lead, or a short first sentence (which keeps the
           // body starting on a fresh, capitalized sentence). Anything else: whole.
+          //
+          // EVERY FRAGMENT OF FINDING TEXT IS SANITISED, AFTER THE SPLIT. The text
+          // comes from an engine that read the fork's files, so it may carry
+          // @mentions, HTML, links, forged headings or a fake "No findings";
+          // guard.sanitizeUntrusted neutralises all of those. It runs on the
+          // title and the body SEPARATELY, after splitting them: splitting
+          // sanitised text could cut a code span in two and leave half of it,
+          // unescaped, outside code.
+          const S = (t, o = {}) =>
+            guard.sanitizeUntrusted(t, { repo, serverUrl: process.env.GITHUB_SERVER_URL, ...o });
           const decorate = (c) => {
             const text = String(c.content || '');
             const m = text.match(tagRe);
             const sev = m ? m[1].toUpperCase() : 'P1';
             const badge = `${SEV[sev]} **${sev}**`;
             const raw = (m ? text.slice(m[0].length) : text).trim();
-            const mk = (t) => t.replace(/\*\*/g, '').replace(/[.!?]+$/, '').trim();
+            // A title is one line: whitespace collapsed, its own bold markup and
+            // closing punctuation removed, then sanitised as the continuation of
+            // the badge's line.
+            const mk = (t) =>
+              S(t.replace(/\*\*/g, '').replace(/[.!?]+$/, '').replace(/\s+/g, ' ').trim(), {
+                atLineStart: false, maxChars: 200,
+              });
             // 1) The model sometimes writes its own **bold** lead — use it verbatim.
             const lead = raw.match(/^\*\*(.+?)\*\*\s+([\s\S]+)$/);
             if (lead) {
@@ -1562,16 +1631,16 @@ runs:
               // for a bold title on all of them, so every explanation would pass
               // through it — and `x ** 2` or `src/**/*.js` in a finding came out
               // corrupted. Only the title's own markup is removed, by mk().
-              return `${badge} **${mk(lead[1])}**\n\n${lead[2].trim()}`;
+              return `${badge} **${mk(lead[1])}**\n\n${S(lead[2].trim())}`;
             }
             // 2) Else split only when the first sentence is short enough to title.
             const rest = raw.replace(/\*\*/g, '');
             const end = rest.search(/(?<=[.!?])\s/);
             if (end > 0 && end <= 72) {
-              return `${badge} **${mk(rest.slice(0, end))}**\n\n${rest.slice(end).trim()}`;
+              return `${badge} **${mk(rest.slice(0, end))}**\n\n${S(rest.slice(end).trim())}`;
             }
-            // 3) Hard to separate cleanly — keep the finding whole.
-            return `${badge} ${rest}`;
+            // 3) Hard to separate cleanly — keep the finding whole, on the badge's line.
+            return `${badge} ${S(rest, { atLineStart: false })}`;
           };
           const counts = {};
           for (const c of comments) counts[sevOf(c)] = (counts[sevOf(c)] || 0) + 1;
@@ -1580,28 +1649,48 @@ runs:
             .map((s) => `${SEV[s]} ${counts[s]} ${s}`)
             .join(' · ');
           const n = comments.length;
+          // BOUNDED. At most guard.MAX_POSTED_FINDINGS findings are posted, the
+          // most severe first; the rest are counted here (the gate and the PR
+          // summary still see every one of them). The review body itself is
+          // kept under GitHub's size limit by joinWithinLimit.
+          const rank = { P0: 0, P1: 1, P2: 2, P3: 3 };
+          const ordered = comments
+            .map((c, i) => ({ c, i }))
+            .sort((a, b) => rank[sevOf(a.c)] - rank[sevOf(b.c)] || a.i - b.i)
+            .map((x) => x.c);
+          const shown = ordered.slice(0, guard.MAX_POSTED_FINDINGS);
+          const notShown = n - shown.length;
           const summary =
             `## 🐳 ${brand}\n\n` +
-            `Found **${n}** issue${n === 1 ? '' : 's'} in this PR: ${breakdown}.`;
+            `Found **${n}** issue${n === 1 ? '' : 's'} in this PR: ${breakdown}.` +
+            (notShown > 0
+              ? `\n\n${notShown} more finding${notShown === 1 ? ' is' : 's are'} not posted here ` +
+                `(at most ${guard.MAX_POSTED_FINDINGS} per review); the PR summary counts all of them.`
+              : '');
 
           const inline = [];
           const rest = [];
-          for (const c of comments) {
+          for (const c of shown) {
             const line =
               c.end_line >= 1 ? c.end_line : c.start_line >= 1 ? c.start_line : 0;
             if (line >= 1 && c.path) {
-              inline.push({ path: c.path, line, side: 'RIGHT', body: decorate(c) });
+              inline.push({ path: String(c.path), line: Number(line), side: 'RIGHT', body: decorate(c) });
             } else {
               rest.push(c);
             }
           }
-          let body = summary;
-          for (const c of rest) body += `\n\n---\n\`${c.path}\`: ${decorate(c)}`;
+          // File paths are the fork's own: shown only as inline code that
+          // cannot break out (guard.codeSpan).
+          const body = guard.joinWithinLimit(
+            summary,
+            rest.map((c) => `${guard.codeSpan(c.path || '(no file)')}: ${decorate(c)}`),
+            { tail: footer },
+          );
 
           try {
-            await github.rest.pulls.createReview({
+            await gh.rest.pulls.createReview({
               ...repo, pull_number: num, commit_id: sha,
-              body: body + footer, event: 'COMMENT',
+              body, event: 'COMMENT',
               comments: inline,
             });
           } catch (e) {
@@ -1609,11 +1698,12 @@ runs:
             // The inline batch carries the actual findings; if GitHub rejects it
             // (uncommentable line, batch too large) append them as text so users
             // still see the details instead of bare counts.
-            let fallback = body;
-            for (const c of inline) {
-              fallback += `\n\n---\n\`${c.path}\` (line ${c.line}): ${c.body}`;
-            }
-            await github.rest.issues.createComment({ ...repo, issue_number: num, body: fallback + footer });
+            const fallback = guard.joinWithinLimit(
+              body.slice(0, body.length - footer.length),
+              inline.map((c) => `${guard.codeSpan(c.path)} (line ${Number(c.line)}): ${c.body}`),
+              { tail: footer },
+            );
+            await gh.rest.issues.createComment({ ...repo, issue_number: num, body: fallback });
           }
 
     # ONE summary per PR, written into the PR DESCRIPTION body (the only element
@@ -1649,9 +1739,19 @@ runs:
         PASSES: ${{ steps.review.outputs.passes }}
         # Changed files the engine skips (excluded-files.mjs, Harden step).
         EXCLUDED_FILE: ${{ runner.temp }}/cr-excluded.json
+        # Every post goes through scripts/publish-guard.mjs: `gh` redacts these
+        # two values (in every encoding) from whatever it sends.
+        PUBLISH_GUARD: ${{ github.action_path }}/scripts/publish-guard.mjs
+        CR_REDACT_API_KEY: ${{ inputs.orcarouter-api-key }}
+        CR_REDACT_GITHUB_TOKEN: ${{ inputs.github-token }}
       with:
         github-token: ${{ inputs.github-token }}
         script: |
+          // THE ONE POSTING FUNNEL (scripts/publish-guard.mjs): every comment,
+          // review, description and status goes out through `gh`, which redacts
+          // the OrcaRouter key and the GitHub token from what it sends.
+          const guard = await import(require('url').pathToFileURL(process.env.PUBLISH_GUARD).href);
+          const gh = guard.guardGithub(github);
           const fs = require('fs');
           const { execFileSync } = require('child_process');
           const { pathToFileURL } = require('url');
@@ -1740,7 +1840,7 @@ runs:
           // Preserve the author's description text; only the marker region changes.
           const newBody = injectSummary(pr.body, summaryMd);
           if (newBody !== (pr.body || '')) {
-            await github.rest.pulls.update({ ...repo, pull_number: num, body: newBody });
+            await gh.rest.pulls.update({ ...repo, pull_number: num, body: newBody });
           }
 
     - name: Enforce severity gate

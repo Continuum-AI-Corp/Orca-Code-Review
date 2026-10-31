@@ -136,6 +136,7 @@ describe("Summary (PR description)", () => {
         PREV_BODY: path.join(dir, "prev.md"),
         SUMMARY_SCRIPT: summaryStub,
         INJECT_SCRIPT: path.join(ROOT, "scripts", "inject-summary.mjs"),
+        PUBLISH_GUARD: path.join(ROOT, "scripts", "publish-guard.mjs"),
         GATE: stubGate(rc),
         BLOCK_ON: "P0,P1",
         QUIET: "false",

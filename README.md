@@ -275,7 +275,7 @@ Security hardening that changes what you may see. Inputs are unchanged except fo
 | New `status-context` (default `"OrcaCode Review"`) | A commit status on the PR head after every run, on-demand runs included: green only for a reviewed head whose gate passed; a skipped review is **"Not reviewed"**. Grant `statuses: write`; require this status instead of the `review` job | `status-context: ""` |
 | New `on-skipped-review` (default `"pass"`) | Nothing, by default: a skipped review still passes the job. `"fail"` fails the job on a skip too | — |
 | Comment commands are checked by the action | `/orcacode-review` from anyone but an owner, member or collaborator, or any other comment, is a no-op | — |
-| Settings outage with `block-on` left at its default | That run blocks on **every** severity (an outage never loosens the gate) | Set `block-on` explicitly |
+| A settings fetch that gets no settings — a 4xx (an ordinary, non-CI key gets one on every run) or an outage | The workflow's inputs apply for that run, exactly as with `settings: "false"`, and the log names the cause. `block-on` in the workflow is the outage floor: set it to what the dashboard enforces if an outage must not loosen the gate | — |
 | The gate fails closed | A result the gate cannot read now fails the check instead of passing | — |
 | `engine-version` must be pinned | Only versions with checksums in `scripts/engine-pins.json` install; anything else fails the run | — |
 | `orcarouter-url` must be https | A plain-http gateway URL is refused (loopback excepted) | — |

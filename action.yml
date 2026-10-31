@@ -474,10 +474,11 @@ runs:
 
     # Dashboard-driven behavior, fetched from the gateway BEFORE anything is
     # cloned or installed: a settings-skip should cost nothing. settings.mjs
-    # always exits 0 and falls back to the built-in defaults on any outage
-    # (a settings hiccup must never kill reviews), naming every stand-in in
-    # `unresolved`. Reviews stay fail-open; the merge gate does not: an
-    # unresolved block_on blocks on every severity unless the workflow pins it.
+    # always exits 0 and says why when it could not fetch: "no_settings" (a 4xx
+    # — an ordinary, non-CI key gets 403 on every run) or "unavailable" (5xx,
+    # timeout, network). Either way THE WORKFLOW'S INPUTS are used for the run,
+    # exactly as with `settings: "false"`, and never anything stricter: the
+    # workflow's block-on is the outage floor (README, SECURITY.md).
     - name: Fetch review settings
       id: settings
       if: steps.pr.outputs.run == 'true'
@@ -561,19 +562,19 @@ runs:
           esac
         }
 
-        # `settings: "false"` makes the workflow FILE authoritative: skip the
-        # fetch entirely, so inputs (or their documented defaults) apply as-is
-        # and no dashboard value can override them. (With the fetch on, an
-        # input left AT its documented default defers to the server — see the
-        # precedence rule below — so e.g. a deliberate `block-on: "P0,P1"` pin
-        # could still be overridden from the dashboard.) auto_review/trigger are
-        # fixed on (true/every_push) in this mode, so gate_decision can only skip
-        # via the author allowlist — a fork author still can't spend on a public
-        # repo just because the dashboard fetch is off.
-        if [ "$SETTINGS_ENABLED" = "false" ]; then
-          echo "settings: disabled via the 'settings' input — the workflow file is authoritative."
+        # THE WORKFLOW FILE AS THE WHOLE CONFIGURATION: inputs (or their
+        # documented defaults) apply as-is and no dashboard value overrides them.
+        # Used by `settings: "false"`, and by a fetch that got no settings — a
+        # 4xx or an outage — so a run without dashboard values behaves exactly
+        # like one that asked for none. (With the fetch on and answered, an input
+        # left AT its documented default defers to the server — see the
+        # precedence rule below.) auto_review/trigger are fixed on
+        # (true/every_push) here, so gate_decision can only skip via the author
+        # allowlist — a fork author still can't spend on a public repo just
+        # because the dashboard did not answer.  $1 = why, for the log.
+        workflow_authoritative() {
           gate_decision true every_push false
-          echo "settings: workflow-file-authoritative -> $DECISION ${REASON:+($REASON)}"
+          echo "settings: workflow-file-authoritative ($1) -> $DECISION ${REASON:+($REASON)}"
           {
             echo "auto_review=true"
             echo "trigger=every_push"
@@ -581,7 +582,7 @@ runs:
             echo "quiet=false"
             echo "fix_first=$INPUT_FIX_FIRST"
             echo "block_on=$INPUT_BLOCK_ON"
-            # Every severity: with the dashboard off there is no report_on to
+            # Every severity: with no dashboard value there is no report_on to
             # honour and the workflow file has no input for it, so display must
             # not narrow on its own.
             echo "report_on=P0,P1,P2,P3"
@@ -589,11 +590,43 @@ runs:
             echo "decision=$DECISION"
             echo "reason=$REASON"
           } >> "$GITHUB_OUTPUT"
+        }
+
+        if [ "$SETTINGS_ENABLED" = "false" ]; then
+          echo "settings: disabled via the 'settings' input — the workflow file is authoritative."
+          workflow_authoritative "settings: false"
           exit 0
         fi
 
         node "$SETTINGS_SCRIPT" --url "$ORCAROUTER_URL" \
           --repo "$REPO" --out "$SETTINGS_JSON"
+
+        # Did the fetch get settings? settings.mjs classifies a failure; a file
+        # it could not write at all is an outage too.
+        FETCH_STATUS=$(node -pe 'JSON.parse(require("fs").readFileSync(process.env.SETTINGS_JSON, "utf8")).status || "ok"' 2>/dev/null) \
+          || FETCH_STATUS="unavailable"
+        FETCH_CAUSE=$(node -pe 'String(JSON.parse(require("fs").readFileSync(process.env.SETTINGS_JSON, "utf8")).cause || "")' 2>/dev/null) \
+          || FETCH_CAUSE="settings.mjs wrote no readable settings file"
+        case "$FETCH_STATUS" in
+          ok) ;;
+          no_settings)
+            # ORDINARY, not an outage: a key that is not a CI key has no
+            # dashboard settings and gets a 4xx on every run.
+            echo "::notice::$BRAND: the OrcaRouter dashboard has no settings for this key ($FETCH_CAUSE) — using this workflow's inputs, as with settings: \"false\" (set that to skip the fetch)."
+            workflow_authoritative "no dashboard settings: $FETCH_CAUSE"
+            exit 0
+            ;;
+          *)
+            # AN OUTAGE NEVER ESCALATES PAST THE WORKFLOW. Blocking on every
+            # severity here (the first cut of the CR-16 fix) blocked every run of
+            # every key the endpoint refuses. The hole CR-16 named — an outage
+            # loosening a stricter dashboard block_on — is closed by the
+            # workflow: its block-on is the outage floor, documented as such.
+            echo "::warning::$BRAND: the OrcaRouter dashboard settings could not be read ($FETCH_CAUSE) — using this workflow's inputs for this run. Its block-on (\"$INPUT_BLOCK_ON\") is the outage floor: set block-on in the workflow to what the dashboard enforces."
+            workflow_authoritative "dashboard unavailable: $FETCH_CAUSE"
+            exit 0
+            ;;
+        esac
 
         # Read one validated field from the settings file; $2 is the fallback
         # if the file itself is missing/unreadable (settings.mjs already
@@ -620,11 +653,10 @@ runs:
         REPORT_ON=$(setting report_on "P0,P1")
         RUBRIC=$(setting rubric "")
 
-        # Which values are stand-ins for ones the dashboard did not give us.
-        # settings.mjs names them in `unresolved`; a file that cannot be read at
-        # all (settings.mjs died before writing it) means every value is one.
+        # Which values are stand-ins for ones the dashboard did not give us
+        # (a field it answered with an invalid value): settings.mjs names them.
         UNRESOLVED=$(node -pe 'const s=JSON.parse(require("fs").readFileSync(process.env.SETTINGS_JSON,"utf8")); (Array.isArray(s.unresolved)?s.unresolved:[]).join(",")' 2>/dev/null) \
-          || UNRESOLVED="unreadable"
+          || UNRESOLVED=""
 
         # PRECEDENCE (documented in the README): an explicit `with:` input that
         # DIFFERS from the action's documented default ("P0,P1") wins over the
@@ -632,15 +664,11 @@ runs:
         if [ "$INPUT_FIX_FIRST" != "P0,P1" ]; then FIX_FIRST="$INPUT_FIX_FIRST"; fi
         if [ "$INPUT_BLOCK_ON" != "P0,P1" ]; then
           BLOCK_ON="$INPUT_BLOCK_ON"
-        elif [ "$UNRESOLVED" = "unreadable" ] || printf ',%s,' "$UNRESOLVED" | grep -q ',block_on,'; then
-          # THE WORKFLOW DEFERS TO THE DASHBOARD AND THE DASHBOARD COULD NOT BE
-          # READ. Its block_on is unknown, and the built-in P0,P1 standing in for
-          # it may be looser than what the workspace set — an outage must never
-          # be the thing that lets a P2 through a gate configured to block it.
-          # So block on every severity for this run: an outage can only tighten
-          # the gate. Pin `block-on:` in the workflow to use your own value.
-          BLOCK_ON="P0,P1,P2,P3"
-          echo "::warning::$BRAND: the OrcaRouter dashboard settings could not be read, so its block-on is unknown — blocking on every severity (P0,P1,P2,P3) for this run. Set block-on in the workflow to choose the outage value yourself."
+        elif printf ',%s,' "$UNRESOLVED" | grep -q ',block_on,'; then
+          # The dashboard answered, but not with a usable block_on: the
+          # workflow's own value stands in, never a guess stricter or looser.
+          BLOCK_ON="$INPUT_BLOCK_ON"
+          echo "::warning::$BRAND: the OrcaRouter dashboard's block_on was not a valid severity list — using this workflow's block-on (\"$INPUT_BLOCK_ON\") for this run."
         fi
 
         # A non-empty server rubric REPLACES rules/severity-instruction.md as

@@ -97,8 +97,13 @@ input wins **only when it differs from its documented default** — writing
 To make the file unambiguously authoritative, set `settings: "false"`. The fetch is
 skipped entirely and no server value can apply.
 
-The settings fetch fails **open**: a control-plane outage falls back to built-in
-defaults rather than killing the review.
+The settings fetch fails **open**. When it gets no settings — a 4xx (an ordinary,
+non-CI key gets one on every run) or an outage (5xx, timeout, network) — the run
+uses this file's inputs rather than killing the review, and **`block-on` in the
+workflow is the outage floor**: if an outage must not loosen a stricter dashboard
+policy, write that policy here. From v1.7.0 (unreleased) the log names which
+failure it was, and the run is exactly a `settings: "false"` run (every severity
+displayed).
 
 ## Dashboard-only settings
 

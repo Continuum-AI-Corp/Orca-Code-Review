@@ -7,7 +7,11 @@
 // error, non-200, garbage JSON, missing success — falls back to the built-in
 // defaults (fail-open: a settings outage must never kill reviews); an invalid
 // FIELD value falls back field-wise while valid fields are kept. One retry,
-// 5s timeout per attempt.
+// 5s timeout per attempt. A failed fetch is CLASSIFIED in the file so the
+// action can name it: `status: "no_settings"` when the gateway answered that
+// this key has none (a 4xx, or success:false — no retry, asking again changes
+// nothing), `status: "unavailable"` for an outage (5xx, 408/429, a timeout, a
+// network error, a garbage body), each with a `cause`.
 //
 // quiet-filter.mjs contract: `node quiet-filter.mjs <result.json> --drop P2
 // --out <filtered.json>` drops exactly the comments whose severity (shared
@@ -60,6 +64,14 @@ const DEFAULTS = {
 // could not be asked", because only the first may loosen a gate.
 const ALL_FIELDS = Object.keys(DEFAULTS);
 const FALLBACK = { ...DEFAULTS, unresolved: ALL_FIELDS };
+
+// An envelope failure: the defaults, every field a stand-in, and why.
+function assertFallback(got, status, cause) {
+  const { status: gotStatus, cause: gotCause, ...rest } = got;
+  assert.deepEqual(rest, FALLBACK);
+  assert.equal(gotStatus, status);
+  assert.match(String(gotCause), cause);
+}
 
 const listen = (server) =>
   new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(server.address().port)));
@@ -166,8 +178,8 @@ describe("settings: fail-open to defaults (must never kill reviews)", () => {
       const r = await run(SETTINGS, baseArgs(gw.port, out));
       assert.equal(r.status, 0, "a settings outage must not fail the job");
       assert.equal(gw.seen.length, 2, "exactly one retry");
-      assert.deepEqual(JSON.parse(readFileSync(out, "utf8")), FALLBACK);
-      assert.deepEqual(JSON.parse(r.stdout), FALLBACK);
+      assertFallback(JSON.parse(readFileSync(out, "utf8")), "unavailable", /HTTP 500/);
+      assertFallback(JSON.parse(r.stdout), "unavailable", /HTTP 500/);
       assert.match(r.stderr, /default/i, "the fallback must be noted on stderr");
     } finally {
       await gw.close();
@@ -183,7 +195,7 @@ describe("settings: fail-open to defaults (must never kill reviews)", () => {
     const out = outPath();
     const r = await run(SETTINGS, baseArgs(deadPort, out));
     assert.equal(r.status, 0);
-    assert.deepEqual(JSON.parse(readFileSync(out, "utf8")), FALLBACK);
+    assertFallback(JSON.parse(readFileSync(out, "utf8")), "unavailable", /network|ECONNREFUSED|fetch failed/i);
     assert.match(r.stderr, /default/i);
   });
 
@@ -193,7 +205,7 @@ describe("settings: fail-open to defaults (must never kill reviews)", () => {
     try {
       const r = await run(SETTINGS, baseArgs(gw.port, out));
       assert.equal(r.status, 0);
-      assert.deepEqual(JSON.parse(readFileSync(out, "utf8")), FALLBACK);
+      assertFallback(JSON.parse(readFileSync(out, "utf8")), "unavailable", /JSON|body/i);
     } finally {
       await gw.close();
     }
@@ -205,7 +217,8 @@ describe("settings: fail-open to defaults (must never kill reviews)", () => {
     try {
       const r = await run(SETTINGS, baseArgs(gw.port, out));
       assert.equal(r.status, 0);
-      assert.deepEqual(JSON.parse(readFileSync(out, "utf8")), FALLBACK);
+      assertFallback(JSON.parse(readFileSync(out, "utf8")), "no_settings", /success/);
+      assert.equal(gw.seen.length, 1, "an answer is not retried");
     } finally {
       await gw.close();
     }
@@ -214,7 +227,7 @@ describe("settings: fail-open to defaults (must never kill reviews)", () => {
   test("missing required flags -> defaults printed to stdout, exit 0", async () => {
     const r = await run(SETTINGS, ["--url", "http://127.0.0.1:1/v1"]);
     assert.equal(r.status, 0);
-    assert.deepEqual(JSON.parse(r.stdout), FALLBACK);
+    assertFallback(JSON.parse(r.stdout), "unavailable", /usage|missing/i);
     assert.match(r.stderr, /usage/i);
   });
 
@@ -224,7 +237,75 @@ describe("settings: fail-open to defaults (must never kill reviews)", () => {
       "--url", "not a url", "--repo", "a/b", "--out", out,
     ]);
     assert.equal(r.status, 0);
-    assert.deepEqual(JSON.parse(readFileSync(out, "utf8")), FALLBACK);
+    assertFallback(JSON.parse(readFileSync(out, "utf8")), "unavailable", /url/i);
+  });
+});
+
+// Which failure it was decides what the action says (a 4xx is "this key has
+// no dashboard settings", ordinary for a key that is not a CI key; anything
+// else is an outage), not what it does: both use the workflow's inputs.
+describe("settings: a failed fetch is classified, with its cause", () => {
+  for (const code of [400, 401, 403, 404]) {
+    test(`HTTP ${code} -> no_settings, no retry`, async () => {
+      const gw = await startGateway([{ status: code, body: { success: false, message: "forbidden" } }]);
+      const out = outPath();
+      try {
+        const r = await run(SETTINGS, baseArgs(gw.port, out));
+        assert.equal(r.status, 0);
+        assertFallback(JSON.parse(readFileSync(out, "utf8")), "no_settings", new RegExp(`HTTP ${code}`));
+        assert.equal(gw.seen.length, 1, "a 4xx is an answer; asking again changes nothing");
+      } finally {
+        await gw.close();
+      }
+    });
+  }
+
+  for (const code of [408, 429, 500, 502, 503]) {
+    test(`HTTP ${code} -> unavailable, after one retry`, async () => {
+      const gw = await startGateway([{ status: code, body: "busy" }]);
+      const out = outPath();
+      try {
+        await run(SETTINGS, baseArgs(gw.port, out));
+        assertFallback(JSON.parse(readFileSync(out, "utf8")), "unavailable", new RegExp(`HTTP ${code}`));
+        assert.equal(gw.seen.length, 2);
+      } finally {
+        await gw.close();
+      }
+    });
+  }
+
+  test("no answer within the timeout -> unavailable, 'timed out'", async () => {
+    const hung = [];
+    const server = http.createServer((req, res) => hung.push(res)); // never answers
+    const port = await listen(server);
+    const out = outPath();
+    try {
+      const r = await new Promise((resolve) => {
+        const child = spawn("node", [SETTINGS, ...baseArgs(port, out)], {
+          stdio: ["ignore", "pipe", "pipe"],
+          env: { ...process.env, ORCAROUTER_API_KEY: "k", CR_SETTINGS_TIMEOUT_MS: "150" },
+        });
+        child.on("close", (status) => resolve({ status }));
+      });
+      assert.equal(r.status, 0);
+      assertFallback(JSON.parse(readFileSync(out, "utf8")), "unavailable", /timed out/i);
+    } finally {
+      for (const res of hung) res.destroy();
+      await new Promise((r) => server.close(r));
+    }
+  });
+
+  test("a good answer says status ok and names nothing", async () => {
+    const gw = await startGateway([{ status: 200, body: envelope(DEFAULTS) }]);
+    const out = outPath();
+    try {
+      await run(SETTINGS, baseArgs(gw.port, out));
+      const got = JSON.parse(readFileSync(out, "utf8"));
+      assert.equal(got.status, undefined, "an ok fetch writes the settings exactly as before");
+      assert.equal(got.cause, undefined);
+    } finally {
+      await gw.close();
+    }
   });
 });
 
@@ -477,9 +558,14 @@ describe("action.yml wiring (settings, quiet mode)", () => {
     // auto-review-authors allowlist (a workflow-file input, not a dashboard
     // value) still gates paid auto reviews here, so the disabled branch runs
     // gate_decision instead of hardcoding review.
+    // It does so through workflow_authoritative(), the path a failed fetch
+    // (4xx or outage) takes too — follow the call into the function.
     const disabled = fetch.slice(fetch.indexOf('"$SETTINGS_ENABLED" = "false"'), fetch.indexOf("node \"$SETTINGS_SCRIPT\""));
-    assert.match(disabled, /gate_decision true every_push false/, "settings=false must still apply the author-allowlist spend guard");
-    assert.match(disabled, /echo "decision=\$DECISION"/, "the short-circuit must emit the gated decision, not a hardcoded review");
+    assert.match(disabled, /workflow_authoritative /, "settings=false must take the workflow-authoritative path");
+    const fn = fetch.match(/workflow_authoritative\(\) \{[\s\S]*?\n {8}\}/);
+    assert.ok(fn, "workflow_authoritative() is not defined in the step");
+    assert.match(fn[0], /gate_decision true every_push false/, "settings=false must still apply the author-allowlist spend guard");
+    assert.match(fn[0], /echo "decision=\$DECISION"/, "the short-circuit must emit the gated decision, not a hardcoded review");
   });
 
   test("dashboard gating applies to any pull_request* event, not just pull_request_target", () => {

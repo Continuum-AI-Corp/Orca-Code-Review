@@ -114,9 +114,12 @@ Failure modes are closed:
   whatever the job does (the job passes unless `on-skipped-review: "fail"`);
   an **oversized** diff fails both unless `on-oversized-diff: "pass"`.
 - If the gate cannot read the result (or crashes), the check fails.
-- If the dashboard settings cannot be read and the workflow leaves `block-on`
-  at its default, that run blocks on every severity: an outage can tighten the
-  gate, never loosen it. An explicit `block-on` in the workflow is used as is.
+- If the dashboard settings cannot be read (5xx, timeout, network), or the key
+  has none (a 4xx — what an ordinary, non-CI key gets), the run uses the
+  workflow's inputs exactly as with `settings: "false"`, and the log names the
+  cause. **The workflow's `block-on` is the outage floor**: an outage never
+  goes below it, and never above it either. If an outage must not loosen a
+  stricter dashboard policy, write that policy into the workflow's `block-on`.
 - A missing judge (L2) fails the run rather than posting unjudged findings
   (`precision-filter: "false"` is the supported way to run without one).
 - Retargeting a PR to another base re-runs the review (shipped workflows

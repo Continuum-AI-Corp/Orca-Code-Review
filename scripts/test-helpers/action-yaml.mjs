@@ -141,3 +141,66 @@ export function fakeCore() {
   };
   return { core, rec };
 }
+
+// ------------------------------------------------------------ env resolution
+
+// The `inputs:` defaults declared in action.yml, as GitHub would hand them to
+// a step when the workflow sets nothing.
+export function inputDefaults() {
+  const out = {};
+  for (const [k, v] of Object.entries(loadAction().inputs || {})) {
+    out[k] = v.default === undefined ? "" : String(v.default);
+  }
+  return out;
+}
+
+// Resolve a step's `env:` block the way the runner would for the simple
+// references this action uses: `${{ a.b.c }}` (optionally inside other text).
+// `ctx` is a nested object ({ inputs, steps, github, runner }). An expression
+// that is not a plain dotted reference, or a reference `ctx` cannot answer,
+// throws — a test that silently got "" would be testing nothing.
+export function resolveEnv(env, ctx) {
+  const out = {};
+  for (const [k, raw] of Object.entries(env || {})) {
+    out[k] = String(raw).replace(/\$\{\{\s*([^}]*?)\s*\}\}/g, (_, expr) => {
+      if (!/^[A-Za-z_][\w-]*(\.[A-Za-z_][\w-]*)*$/.test(expr)) {
+        throw new Error(`env ${k}: not a plain reference: ${expr}`);
+      }
+      let v = ctx;
+      for (const part of expr.split(".")) {
+        if (v === undefined || v === null || !(part in Object(v))) {
+          throw new Error(`env ${k}: ${expr} is not provided by the test context`);
+        }
+        v = v[part];
+      }
+      return v === undefined || v === null ? "" : String(v);
+    });
+  }
+  return out;
+}
+
+// Async twin of runBashStep, for steps that talk to a server living in the
+// test process (spawnSync would block the event loop that has to answer).
+export async function runBashStepAsync(script, { env = {}, stubDir = null, cwd = undefined } = {}) {
+  const { spawn } = await import("node:child_process");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "action-step-"));
+  const file = path.join(dir, "step.sh");
+  fs.writeFileSync(file, script);
+  const PATH = stubDir ? `${stubDir}${path.delimiter}${process.env.PATH}` : process.env.PATH;
+  try {
+    return await new Promise((resolve) => {
+      const child = spawn("bash", ["--noprofile", "--norc", "-eo", "pipefail", file], {
+        cwd,
+        env: { ...process.env, PATH, ...env },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (c) => (stdout += c));
+      child.stderr.on("data", (c) => (stderr += c));
+      child.on("close", (status) => resolve({ status, stdout, stderr }));
+    });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}

@@ -244,6 +244,7 @@ runs:
           "$RUNNER_TEMP/result-merged.json" \
           "$RUNNER_TEMP/cr-settings.json" "$RUNNER_TEMP/cr-rubric.md" \
           "$RUNNER_TEMP/cr-facts.json" "$RUNNER_TEMP/proxy.out" "$RUNNER_TEMP/proxy.err" \
+          "$RUNNER_TEMP/cr-upstream-key" \
           "$RUNNER_TEMP/policy-block.json" \
           "$RUNNER_TEMP/pr.diff" "$RUNNER_TEMP/diff-guard.json" "$RUNNER_TEMP/prev-summary.md" \
           "$RUNNER_TEMP/wallclock-timeout" "$RUNNER_TEMP/judge-unavailable" \
@@ -747,6 +748,27 @@ runs:
         ENGINE_VERSION: ${{ inputs.engine-version }}
       run: npm install -g "@alibaba-group/open-code-review@${ENGINE_VERSION}"
 
+    # THE KEY GOES TO THE PROXY, NEVER TO THE ENGINE. The engine reads the PR
+    # checkout — fork-controlled files written to steer an LLM agent — so
+    # anything it can read is one prompt injection away from a PR comment: its
+    # own environment, its parent shell's (/proc/<ppid>/environ is readable by
+    # the same user), or a file. So the Review step's env carries no secret at
+    # all. This step, which runs nothing from the PR, writes the key to a
+    # 0600 file; the proxy reads and UNLINKS it before it announces its URL,
+    # i.e. before the engine can start, and injects it on the way out. The
+    # engine and the judge only ever hold a placeholder.
+    - name: Stage the gateway key for the proxy
+      id: stage-key
+      if: steps.settings.outputs.decision != 'skip' && steps.guard.outputs.decision != 'skip'
+      shell: bash
+      env:
+        ORCAROUTER_API_KEY: ${{ inputs.orcarouter-api-key }}
+        UPSTREAM_KEY_FILE: ${{ runner.temp }}/cr-upstream-key
+      run: |
+        umask 077
+        rm -f "$UPSTREAM_KEY_FILE"
+        printf '%s' "$ORCAROUTER_API_KEY" > "$UPSTREAM_KEY_FILE"
+
     - name: Review
       id: review
       if: steps.settings.outputs.decision != 'skip' && steps.guard.outputs.decision != 'skip'
@@ -793,7 +815,11 @@ runs:
         # Nothing is written to the shared ~/.opencodereview, so we neither leak a
         # token to disk nor clobber a self-hosted runner's existing OCR config.
         # The model is the router alias; the router's DSL picks the real model.
-        OCR_LLM_TOKEN: ${{ inputs.orcarouter-api-key }}
+        #
+        # A PLACEHOLDER, not the key: the proxy replaces it with the real key
+        # (staged by the step above) on the way to the gateway. See there.
+        OCR_LLM_TOKEN: "placeholder-the-proxy-injects-the-key"
+        UPSTREAM_KEY_FILE: ${{ runner.temp }}/cr-upstream-key
         OCR_LLM_AUTH_HEADER: authorization
         OCR_LLM_MODEL: ${{ inputs.router }}
         OCR_USE_ANTHROPIC: "false"
@@ -853,9 +879,15 @@ runs:
         CR_USAGE_FILE=""
         if [ "$METER" = "true" ]; then CR_USAGE_FILE="$USAGE_FILE"; fi
         export CR_USAGE_FILE
-        CR_FACTS_FILE="$FACTS_FILE" CR_POLICY_BLOCK_FILE="$POLICY_BLOCK" node "$PROXY" > "$RUNNER_TEMP/proxy.out" 2> "$RUNNER_TEMP/proxy.err" &
+        # The proxy reads the staged key file and unlinks it before printing
+        # PROXY_URL; the engine starts only after that line appears.
+        if [ ! -s "$UPSTREAM_KEY_FILE" ]; then
+          echo "::error::$BRAND: the gateway key was not staged for the proxy."; exit 1
+        fi
+        CR_UPSTREAM_KEY_FILE="$UPSTREAM_KEY_FILE" CR_FACTS_FILE="$FACTS_FILE" CR_POLICY_BLOCK_FILE="$POLICY_BLOCK" \
+          node "$PROXY" > "$RUNNER_TEMP/proxy.out" 2> "$RUNNER_TEMP/proxy.err" &
         PROXY_PID=$!
-        trap 'kill "$PROXY_PID" 2>/dev/null || true' EXIT
+        trap 'kill "$PROXY_PID" 2>/dev/null || true; rm -f "$UPSTREAM_KEY_FILE"' EXIT
         for _ in $(seq 1 50); do
           OCR_LLM_URL=$(sed -n 's/^PROXY_URL=//p' "$RUNNER_TEMP/proxy.out" 2>/dev/null || true)
           [ -n "$OCR_LLM_URL" ] && break
@@ -863,6 +895,10 @@ runs:
         done
         if [ -z "$OCR_LLM_URL" ]; then
           echo "::error::$BRAND: fact proxy failed to start."; cat "$RUNNER_TEMP/proxy.err" || true; exit 1
+        fi
+        # Belt and braces: never start the engine while the key is on disk.
+        if [ -e "$UPSTREAM_KEY_FILE" ]; then
+          echo "::error::$BRAND: the staged gateway key is still on disk — refusing to start the engine."; exit 1
         fi
         export OCR_LLM_URL
 
@@ -1881,6 +1917,7 @@ runs:
           "$RUNNER_TEMP/result-merged.json" \
           "$RUNNER_TEMP/cr-settings.json" "$RUNNER_TEMP/cr-rubric.md" \
           "$RUNNER_TEMP/cr-facts.json" "$RUNNER_TEMP/proxy.out" "$RUNNER_TEMP/proxy.err" \
+          "$RUNNER_TEMP/cr-upstream-key" \
           "$RUNNER_TEMP/policy-block.json" \
           "$RUNNER_TEMP/pr.diff" "$RUNNER_TEMP/diff-guard.json" "$RUNNER_TEMP/prev-summary.md" \
           "$RUNNER_TEMP/wallclock-timeout" "$RUNNER_TEMP/judge-unavailable" \

@@ -67,15 +67,34 @@
 // flat on a multi-MB completion. Extraction and the append are fully soft-fail:
 // metering must never alter, delay, or break a review.
 //
+// Pinning and credentials. The proxy is the one process in the job that holds
+// the real OrcaRouter key: the engine that reads the (possibly hostile) PR
+// checkout is given a placeholder, and the proxy replaces the client's
+// Authorization with its own key on the way out. Which makes WHERE a request
+// may go load-bearing:
+//   - only an origin-form request target (`/path?query`) is accepted — never
+//     absolute-form (`http://host/…`), scheme-relative (`//host/…`) or a
+//     backslash spelling of either, all of which `new URL(target, base)`
+//     would resolve to another host;
+//   - only the configured endpoint's own path is forwarded (anything else is
+//     answered 404 and goes nowhere), and only to the configured origin;
+//   - the upstream must be https; plain http is accepted for a loopback host
+//     only (local test doubles).
+//
 // Env:
 //   ORCAROUTER_URL          full upstream chat-completions URL (origin + path forwarded)
+//   CR_UPSTREAM_KEY_FILE    file holding the OrcaRouter key; read and UNLINKED at
+//                           startup, before PROXY_URL is printed, so nothing started
+//                           after the proxy can read it from disk. The key is then
+//                           sent as `authorization: Bearer <key>` on every upstream
+//                           request, replacing the client's. Unset: the client's
+//                           Authorization is forwarded (local harness use).
 //   CR_FACTS_FILE           path to the JSON facts file the driver rewrites per pass
 //   CR_UPSTREAM_TIMEOUT_MS  optional per-attempt upstream timeout (ms; default 120000)
 //   CR_USAGE_FILE           optional JSONL path for per-call token accounting (off when unset)
 //   CR_MAX_RPM              optional client-side request ceiling (requests/min; unset = no limit)
 // On listen it prints `PROXY_URL=http://127.0.0.1:<port><upstream-path>` to
-// stdout; the driver sets OCR_LLM_URL to that. Auth is forwarded untouched and
-// never logged.
+// stdout; the driver sets OCR_LLM_URL to that. Credentials are never logged.
 //
 // Exported for tests: createProxyServer({ upstreamUrl, factsFile,
 // policyBlockFile, sleep, maxRetries, maxBufferBytes, usageFile }) returns an
@@ -304,8 +323,39 @@ function retryDelayMs(retryIndex, retryAfter) {
   return BACKOFF_MS[Math.min(retryIndex, BACKOFF_MS.length - 1)];
 }
 
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
+
+// The one upstream this proxy may talk to. https, or http to a loopback host.
+export function pinnedUpstream(upstreamUrl) {
+  const u = new URL(upstreamUrl);
+  if (u.protocol === "https:") return u;
+  if (u.protocol === "http:" && LOOPBACK_HOSTS.has(u.hostname)) return u;
+  throw new Error(
+    `fact-proxy: refusing upstream ${u.protocol}//${u.host} — the gateway must be https (plain http is allowed for a loopback host only)`,
+  );
+}
+
+// The forwarding URL for one client request target, or null when the target
+// is anything but an origin-form path equal to the configured endpoint's.
+export function pinnedTarget(rawTarget, upstream) {
+  const t = String(rawTarget || "");
+  // Origin-form only: one leading "/", no second "/" or "\" after it (both
+  // make `new URL` read an authority), nothing that is not a plain path char.
+  if (!t.startsWith("/") || t.startsWith("//") || t.includes("\\")) return null;
+  let resolved;
+  try {
+    resolved = new URL(t, upstream.origin);
+  } catch {
+    return null;
+  }
+  if (resolved.origin !== upstream.origin) return null;
+  if (resolved.pathname !== upstream.pathname) return null;
+  return new URL(`${upstream.origin}${resolved.pathname}${resolved.search}`);
+}
+
 export function createProxyServer({
   upstreamUrl,
+  upstreamKey = "",
   factsFile = "",
   policyBlockFile = "",
   sleep = defaultSleep,
@@ -316,7 +366,7 @@ export function createProxyServer({
   maxRpm = 0,
   now = () => Date.now(),
 } = {}) {
-  const upstream = new URL(upstreamUrl);
+  const upstream = pinnedUpstream(upstreamUrl);
   const upstreamLib = upstream.protocol === "http:" ? http : https;
   // Shared across every in-flight request: the ceiling is per-proxy (i.e. per
   // job), not per-connection.
@@ -327,9 +377,27 @@ export function createProxyServer({
   let callSeq = 0;
 
   return http.createServer((req, res) => {
+    // Pin the target FIRST: a refused target is answered here and never dials
+    // anything, so neither the client's headers nor ours leave the runner.
+    const target = pinnedTarget(req.url, upstream);
+    if (!target) {
+      console.error("fact-proxy: refused a request target that is not the configured endpoint");
+      req.resume();
+      res.writeHead(404, { "content-type": "text/plain" });
+      res.end("not the configured endpoint\n");
+      return;
+    }
     const mySeq = usageFile ? ++callSeq : 0;
     const headers = { ...req.headers };
     delete headers.host; // must match upstream, not the loopback proxy
+    // The proxy's own key, when it has one, is the ONLY credential that leaves:
+    // whatever the client sent (the engine holds a placeholder) is dropped.
+    if (upstreamKey) {
+      delete headers.authorization;
+      delete headers["x-api-key"];
+      delete headers["proxy-authorization"];
+      headers.authorization = `Bearer ${upstreamKey}`;
+    }
     // The metering tap reads raw response bytes, so a gzip/br body would leave
     // every token field null. This is the DEFAULT path rather than an edge case:
     // Go's net/http adds `Accept-Encoding: gzip` on its own and decompresses
@@ -339,7 +407,6 @@ export function createProxyServer({
     // silently measures nothing.
     if (usageFile) headers["accept-encoding"] = "identity";
     Object.assign(headers, readFacts(factsFile));
-    const target = new URL(req.url, upstream);
 
     // The upstream request currently in flight for THIS client request (the
     // buffered attempt or the streaming variant), so a client disconnect can
@@ -635,6 +702,37 @@ export function createProxyServer({
 
 // ---- CLI entry (contract unchanged): env-driven, prints PROXY_URL on listen.
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  // Configuration is validated BEFORE the backstop below exists: a refusal
+  // to start must end the process, which the backstop deliberately never does.
+  let upstream;
+  try {
+    upstream = pinnedUpstream(process.env.ORCAROUTER_URL || "https://api.orcarouter.ai/v1/chat/completions");
+  } catch (e) {
+    console.error(e.message);
+    process.exit(1);
+  }
+  // The key comes from a file that is unlinked the moment it is read — before
+  // PROXY_URL is printed, so before the driver can start the engine. Not from
+  // the environment: a same-user process can read /proc/<pid>/environ.
+  let upstreamKey = "";
+  if (process.env.CR_UPSTREAM_KEY_FILE) {
+    try {
+      upstreamKey = fs.readFileSync(process.env.CR_UPSTREAM_KEY_FILE, "utf8").trim();
+    } catch (e) {
+      console.error(`fact-proxy: cannot read CR_UPSTREAM_KEY_FILE (${e.code || e.message}) — refusing to start`);
+      process.exit(1);
+    }
+    try {
+      fs.unlinkSync(process.env.CR_UPSTREAM_KEY_FILE);
+    } catch (e) {
+      console.error(`fact-proxy: cannot remove CR_UPSTREAM_KEY_FILE (${e.code || e.message}) — refusing to start`);
+      process.exit(1);
+    }
+    if (!upstreamKey) {
+      console.error("fact-proxy: CR_UPSTREAM_KEY_FILE is empty — refusing to start");
+      process.exit(1);
+    }
+  }
   // Backstop: one misbehaving client (a mid-write EPIPE, a socket destroyed
   // under us) must NEVER take the whole proxy down mid-job — every request
   // already fails closed on its own path. Log and keep serving; do NOT exit.
@@ -644,12 +742,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     console.error(`fact-proxy: uncaught exception (kept alive): ${e && e.stack ? e.stack : e}`);
   });
 
-  const upstream = new URL(
-    process.env.ORCAROUTER_URL || "https://api.orcarouter.ai/v1/chat/completions",
-  );
   const envTimeout = Number(process.env.CR_UPSTREAM_TIMEOUT_MS);
   const server = createProxyServer({
     upstreamUrl: upstream.href,
+    upstreamKey,
     factsFile: process.env.CR_FACTS_FILE || "",
     policyBlockFile: process.env.CR_POLICY_BLOCK_FILE || "",
     usageFile: process.env.CR_USAGE_FILE || "",

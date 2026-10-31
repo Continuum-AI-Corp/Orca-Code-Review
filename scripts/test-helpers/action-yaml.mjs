@@ -63,6 +63,17 @@ export function shellCommentLines(script) {
     .filter(({ line }) => /^\s*#/.test(line));
 }
 
+// The environment a step under test starts from: this process's, minus every
+// variable the RUNNER owns. On a CI runner the test job's own GITHUB_OUTPUT,
+// GITHUB_ENV, GITHUB_PATH, GITHUB_STEP_SUMMARY, RUNNER_TEMP and
+// GITHUB_EVENT_NAME are set; a step started from `...process.env` would write
+// its outputs into the TEST job's files and read the test workflow's event.
+// A test passes the ones it means explicitly (scripts/test-isolation.test.mjs).
+const RUNNER_OWNED = /^(GITHUB_|RUNNER_|ACTIONS_)/;
+export function cleanEnv() {
+  return Object.fromEntries(Object.entries(process.env).filter(([k]) => !RUNNER_OWNED.test(k)));
+}
+
 // Run a step's bash `run:` the way the runner does (`bash -e {0}`), with the
 // given env and a PATH that puts `stubDir` first, so tests can stand in for
 // git/gh/node. Returns spawnSync's result.
@@ -75,7 +86,7 @@ export function runBashStep(script, { env = {}, stubDir = null, cwd = undefined 
     return spawnSync("bash", ["--noprofile", "--norc", "-eo", "pipefail", file], {
       cwd,
       encoding: "utf8",
-      env: { ...process.env, PATH, ...env },
+      env: { ...cleanEnv(), PATH, ...env },
     });
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -94,13 +105,17 @@ export function stub(dir, name, body) {
 // parameters are its context objects. Do the same, with doubles.
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
 
+// The script runs in THIS process, so the runner-owned variables are taken out
+// of process.env for its duration (see cleanEnv) and everything is put back.
 export async function runGithubScript(script, { github, context, core, env = {} } = {}) {
   const saved = {};
-  for (const [k, v] of Object.entries(env)) {
-    saved[k] = process.env[k];
+  const set = (k, v) => {
+    if (!(k in saved)) saved[k] = process.env[k];
     if (v === undefined || v === null) delete process.env[k];
     else process.env[k] = String(v);
-  }
+  };
+  for (const k of Object.keys(process.env)) if (RUNNER_OWNED.test(k)) set(k, undefined);
+  for (const [k, v] of Object.entries(env)) set(k, v);
   try {
     const { createRequire } = await import("node:module");
     const require = createRequire(path.join(ROOT, "action.yml"));
@@ -191,7 +206,7 @@ export async function runBashStepAsync(script, { env = {}, stubDir = null, cwd =
     return await new Promise((resolve) => {
       const child = spawn("bash", ["--noprofile", "--norc", "-eo", "pipefail", file], {
         cwd,
-        env: { ...process.env, PATH, ...env },
+        env: { ...cleanEnv(), PATH, ...env },
         stdio: ["ignore", "pipe", "pipe"],
       });
       let stdout = "";

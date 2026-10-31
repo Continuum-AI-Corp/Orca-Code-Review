@@ -25,6 +25,8 @@ import { fileURLToPath } from "node:url";
 import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
 
+import { cleanEnv } from "./test-helpers/action-yaml.mjs";
+
 const SCRIPTS = dirname(fileURLToPath(import.meta.url));
 const SETTINGS = join(SCRIPTS, "settings.mjs");
 const QUIET_FILTER = join(SCRIPTS, "quiet-filter.mjs");
@@ -586,7 +588,7 @@ describe("action.yml: gate_decision — shared auto-event gate (both settings pa
       `printf '%s|%s' "$DECISION" "$REASON"\n`;
     const r = spawnSync("bash", ["-c", script], {
       encoding: "utf8",
-      env: { ...process.env, EVENT_NAME: event, AUTO_REVIEW_AUTHORS: list, AUTHOR_ASSOC: assoc, REPO_PRIVATE: isPrivate },
+      env: { ...cleanEnv(), EVENT_NAME: event, AUTO_REVIEW_AUTHORS: list, AUTHOR_ASSOC: assoc, REPO_PRIVATE: isPrivate },
     });
     assert.equal(r.status, 0, r.stderr);
     const [decision, reason] = r.stdout.split("|");

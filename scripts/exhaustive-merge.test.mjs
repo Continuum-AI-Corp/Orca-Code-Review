@@ -22,6 +22,8 @@ import { fileURLToPath } from "node:url";
 import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
 
+import { cleanEnv } from "./test-helpers/action-yaml.mjs";
+
 const MERGE = join(dirname(fileURLToPath(import.meta.url)), "exhaustive-merge.mjs");
 let dir;
 
@@ -240,7 +242,7 @@ node() {
     const r = spawnSync("bash", ["-c", script], {
       encoding: "utf8",
       env: {
-        ...process.env,
+        ...cleanEnv(),
         EXHAUSTIVE: "true",
         BRAND: "TestBrand",
         RESULT, RESULT_EXTRA, RESULT_MERGED, POLICY_BLOCK,
